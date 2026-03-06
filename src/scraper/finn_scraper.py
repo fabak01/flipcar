@@ -72,6 +72,61 @@ def compute_dq_score(listing: dict[str, Any], params: dict[str, Any]) -> float:
     return max(score, 0.0)
 
 
+def _parse_base64_data(html: str) -> list[dict[str, Any]]:
+    """Extract listing data from base64-encoded script tags (FINN's actual format)."""
+    import base64
+
+    soup = BeautifulSoup(html, "html.parser")
+    for script in soup.find_all("script"):
+        text = script.string or ""
+        if len(text) > 50000 and text.startswith("eyJ"):
+            try:
+                decoded = base64.b64decode(text).decode("utf-8")
+                data = json.loads(decoded)
+                if "queries" in data:
+                    for query in data["queries"]:
+                        state = query.get("state", {})
+                        qdata = state.get("data", {})
+                        if isinstance(qdata, dict):
+                            docs = qdata.get("docs", [])
+                            if isinstance(docs, list) and docs:
+                                logger.info("Found %d docs via base64 decode", len(docs))
+                                return docs
+            except Exception as e:
+                logger.debug("Base64 decode attempt failed: %s", e)
+    return []
+
+
+def _parse_schema_org(html: str) -> list[dict[str, Any]]:
+    """Fallback: extract listings from schema.org CollectionPage JSON-LD."""
+    soup = BeautifulSoup(html, "html.parser")
+    for script in soup.find_all("script"):
+        text = script.string or ""
+        if '"@type":"CollectionPage"' in text or '"@type": "CollectionPage"' in text:
+            try:
+                data = json.loads(text)
+                items = data.get("mainEntity", {}).get("itemListElement", [])
+                if items:
+                    logger.info("Found %d items via schema.org", len(items))
+                    # Convert schema.org format to our format
+                    listings = []
+                    for item in items:
+                        product = item.get("item", {})
+                        offers = product.get("offers", {})
+                        url = product.get("url", "")
+                        id_match = re.search(r'/(\d+)', url)
+                        listings.append({
+                            "id": id_match.group(1) if id_match else "",
+                            "heading": product.get("name", ""),
+                            "price": {"amount": int(offers.get("price", 0))},
+                            "canonical_url": url,
+                        })
+                    return listings
+            except (json.JSONDecodeError, ValueError):
+                continue
+    return []
+
+
 def _parse_next_data(html: str) -> Optional[dict[str, Any]]:
     """Extract listing data from __NEXT_DATA__ script tag."""
     soup = BeautifulSoup(html, "html.parser")
@@ -84,23 +139,6 @@ def _parse_next_data(html: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def _parse_remix_data(html: str) -> Optional[dict[str, Any]]:
-    """Fallback: look for remix or other JSON data in script tags."""
-    patterns = [
-        r'window\.__remixContext\s*=\s*({.*?});',
-        r'self\.__next_f\.push\(\[.*?,\s*"(.*?)"\]\)',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group(1))
-                return data
-            except (json.JSONDecodeError, IndexError):
-                continue
-    return None
-
-
 def _extract_listings_from_next_data(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Navigate __NEXT_DATA__ structure to find listing items."""
     listings = []
@@ -110,7 +148,6 @@ def _extract_listings_from_next_data(data: dict[str, Any]) -> list[dict[str, Any
         docs = search.get("docs", search.get("ads", []))
         if isinstance(docs, list):
             return docs
-        # Try nested paths
         for key in ["result", "data", "searchResult"]:
             if key in search and isinstance(search[key], dict):
                 items = search[key].get("docs", search[key].get("ads", search[key].get("items", [])))
@@ -168,7 +205,7 @@ def _normalize_listing(
     except (ValueError, TypeError):
         price_nok = None
 
-    variant_raw = raw.get("variant", raw.get("heading_suffix", ""))
+    variant_raw = raw.get("model_specification", raw.get("variant", raw.get("heading_suffix", "")))
     title = raw.get("heading", raw.get("title", ""))
     variant, uncertainty = normalize_variant(make, model, str(variant_raw), str(title), aliases)
 
@@ -198,14 +235,18 @@ def _normalize_listing(
         location = location.get("city", location.get("name", str(location)))
 
     seller_type = "privat"
-    dealer_info = raw.get("dealer", raw.get("company", raw.get("trade_type", "")))
-    if dealer_info:
+    dealer_segment = raw.get("dealer_segment", "")
+    if dealer_segment and "forhandler" in str(dealer_segment).lower():
+        seller_type = "forhandler"
+    elif raw.get("dealer") or raw.get("organisation_name") or raw.get("company"):
         seller_type = "forhandler"
 
     reg_nr = raw.get("registration_number", raw.get("regno", None))
     listing_text = raw.get("body", raw.get("description", raw.get("listing_text", "")))
     n_images = raw.get("image_count", len(raw.get("images", raw.get("image_urls", []))))
     listing_date = raw.get("published", raw.get("timestamp", raw.get("listing_date")))
+    fuel_type = raw.get("fuel", raw.get("fuel_type", ""))
+    gearbox = raw.get("transmission", raw.get("gearbox", ""))
 
     return {
         "listing_id": listing_id,
@@ -218,8 +259,8 @@ def _normalize_listing(
         "km": km,
         "price_nok": price_nok,
         "location_city": str(location),
-        "fuel_type": raw.get("fuel", raw.get("fuel_type", "")),
-        "gearbox": raw.get("gearbox", raw.get("transmission", "")),
+        "fuel_type": str(fuel_type),
+        "gearbox": str(gearbox),
         "seller_type": seller_type,
         "listing_text": str(listing_text or ""),
         "listing_date": str(listing_date or ""),
@@ -246,17 +287,30 @@ def _get_next_page_url(soup: BeautifulSoup, current_url: str) -> Optional[str]:
 def scrape_model(
     make: str,
     model: str,
-    finn_slug: str,
+    finn_query: str,
     params: dict[str, Any],
     aliases: dict[str, Any],
     session: Optional[requests.Session] = None,
 ) -> list[dict[str, Any]]:
-    """Scrape all listings for a given model from FINN."""
+    """Scrape all listings for a given model from FINN.
+
+    Args:
+        make: Car make (e.g. 'Tesla').
+        model: Car model (e.g. 'Model Y').
+        finn_query: Search query string for FINN (e.g. 'tesla model y').
+        params: Scraper parameters.
+        aliases: Variant alias config.
+        session: Optional requests session.
+
+    Returns:
+        List of normalized listing dicts.
+    """
     if session is None:
         session = requests.Session()
         session.headers.update({"User-Agent": params["user_agent"]})
 
-    base_url = f"https://www.finn.no/car/used/search.html?{finn_slug}&sort=PUBLISHED_DESC"
+    from urllib.parse import quote_plus
+    base_url = f"https://www.finn.no/mobility/search/car?q={quote_plus(finn_query)}&sort=PUBLISHED_DESC"
     all_listings: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     url = base_url
@@ -277,22 +331,22 @@ def scrape_model(
 
         raw_listings: list[dict[str, Any]] = []
 
-        # Strategy 1: __NEXT_DATA__
-        next_data = _parse_next_data(html)
-        if next_data:
-            raw_listings = _extract_listings_from_next_data(next_data)
-            if raw_listings:
-                logger.info("Found %d listings via __NEXT_DATA__", len(raw_listings))
+        # Strategy 1: Base64-encoded JSON (FINN's actual format)
+        raw_listings = _parse_base64_data(html)
 
-        # Strategy 2: Remix/other JSON
+        # Strategy 2: Schema.org JSON-LD
         if not raw_listings:
-            remix_data = _parse_remix_data(html)
-            if remix_data:
-                raw_listings = _extract_listings_from_next_data(remix_data)
-                if raw_listings:
-                    logger.info("Found %d listings via remix data", len(raw_listings))
+            raw_listings = _parse_schema_org(html)
 
-        # Strategy 3: HTML parsing
+        # Strategy 3: __NEXT_DATA__
+        if not raw_listings:
+            next_data = _parse_next_data(html)
+            if next_data:
+                raw_listings = _extract_listings_from_next_data(next_data)
+                if raw_listings:
+                    logger.info("Found %d listings via __NEXT_DATA__", len(raw_listings))
+
+        # Strategy 4: HTML parsing
         if not raw_listings:
             raw_listings = _extract_listings_from_html(soup)
             if raw_listings:
@@ -304,6 +358,11 @@ def scrape_model(
 
         new_on_page = 0
         for raw in raw_listings:
+            # Post-filter: verify heading contains expected make/model
+            heading = str(raw.get("heading", "")).lower()
+            if make.lower() not in heading and model.lower() not in heading:
+                continue
+
             normalized = _normalize_listing(raw, make, model, aliases)
             if normalized and normalized["listing_id"] not in seen_ids:
                 seen_ids.add(normalized["listing_id"])
@@ -348,10 +407,10 @@ def scrape_all_models(
     for model_cfg in models:
         make = model_cfg["make"]
         model = model_cfg["model"]
-        finn_slug = model_cfg["finn_slug"]
+        finn_query = model_cfg.get("finn_query", f"{make} {model}")
         key = _model_key(make, model)
 
-        listings = scrape_model(make, model, finn_slug, params, aliases, session)
+        listings = scrape_model(make, model, finn_query, params, aliases, session)
 
         # Apply DQ scoring
         dq_params_cfg = yaml.safe_load(open(CONFIG_DIR / "params.yaml"))["data_quality"]
