@@ -1,0 +1,157 @@
+tesla_model_y:
+  years: [2020, 2021, 2022, 2023]
+  issues:
+    - name: brakes_lights_suspension
+      probability: 0.45
+      cost_p50: 5000
+      cost_p90: 18000
+      confidence: HIGH
+      source: "45% feilrate dansk/norsk EU-inspeksjon 2025"
+    - name: build_quality_paint
+      probability: 0.35
+      cost_p50: 6000
+      cost_p90: 15000
+      confidence: HIGH
+      source: "Consumer Reports 1-2/5 konsistent"
+    - name: heat_pump_failure
+      probability: 0.15
+      cost_p50: 8000
+      cost_p90: 20000
+      confidence: MEDIUM
+      source: "Kjent problem 2021-2023, spesielt kaldt klima"
+
+tesla_model_3:
+  years: [2019, 2020, 2021, 2022, 2023]
+  issues:
+    - name: brakes_lights_suspension
+      probability: 0.34
+      cost_p50: 5000
+      cost_p90: 16000
+      confidence: HIGH
+      source: "34% feilrate dansk inspeksjon 2025"
+    - name: build_quality_paint
+      probability: 0.30
+      cost_p50: 5000
+      cost_p90: 14000
+      confidence: HIGH
+      source: "Consumer Reports"
+
+nissan_leaf:
+  years: [2016, 2017, 2018, 2019, 2020, 2021, 2022]
+  issues:
+    - name: battery_degradation
+      probability: 0.70
+      cost_p50: 0
+      cost_p90: 55000
+      confidence: HIGH
+      source: "FlipTheFleet database, tusenvis av datapunkter"
+      note: "HARD GATE: Uten SOH-data sett uncertainty = 0.80"
+    - name: soh_manipulation
+      probability: 0.15
+      cost_p50: 0
+      cost_p90: 40000
+      confidence: MEDIUM
+      source: "Dokumentert i forum + FlipTheFleet"
+  special_rules:
+    - "30kwh pakker har betydelig hoeyere risiko -> multipliser alle probability * 1.3"
+    - "Hvis year <= 2017 og variant = 24kwh -> batteriet er sannsynligvis svaert degradert"
+
+bmw_i3:
+  years: [2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021]
+  issues:
+    - name: ac_compressor_failure
+      probability: 0.20
+      cost_p50: 12000
+      cost_p90: 35000
+      confidence: HIGH
+      source: "Autocar: vanligste problem, kan oedelegge hele klimasystem"
+    - name: 12v_battery
+      probability: 0.35
+      cost_p50: 2500
+      cost_p90: 4000
+      confidence: HIGH
+      source: "Kjent svakhet"
+    - name: charging_port
+      probability: 0.15
+      cost_p50: 3000
+      cost_p90: 8000
+      confidence: MEDIUM
+      source: "Forum-rapporter"
+  special_rules:
+    - "2014-modeller: multipliser alle probability * 1.8"
+
+vw_id4:
+  years: [2021, 2022, 2023]
+  issues:
+    - name: software_bugs
+      probability: 0.25
+      cost_p50: 0
+      cost_p90: 3000
+      confidence: MEDIUM
+      source: "Brukerrapporter"
+    - name: 12v_battery
+      probability: 0.20
+      cost_p50: 2000
+      cost_p90: 3500
+      confidence: MEDIUM
+      source: "Forum-rapporter"
+  note: "2% inspeksjonsfeilrate = svaert paalitelig. Laveste risikoprofil."
+
+audi_etron:
+  years: [2019, 2020, 2021, 2022, 2023]
+  issues:
+    - name: panoroof_water_leak
+      probability: 0.25
+      cost_p50: 8000
+      cost_p90: 25000
+      confidence: MEDIUM
+      source: "Kjent TSB fra Audi"
+    - name: air_suspension
+      probability: 0.20
+      cost_p50: 15000
+      cost_p90: 35000
+      confidence: MEDIUM
+      source: "Verksted-rapporter"
+
+toyota_rav4:
+  years: [2019, 2020, 2021, 2022, 2023]
+  issues:
+    - name: hybrid_battery
+      probability: 0.05
+      cost_p50: 5000
+      cost_p90: 25000
+      confidence: LOW
+      source: "Svart lav feilrate"
+  note: "Toyota RAV4 er blant de mest paalitelige. Minimal risiko."
+
+hyundai_ioniq5:
+  years: [2021, 2022, 2023]
+  issues:
+    - name: 12v_battery
+      probability: 0.25
+      cost_p50: 2000
+      cost_p90: 3500
+      confidence: MEDIUM
+      source: "Kjent problem, tilbakekalling i noen markeder"
+    - name: infotainment_bugs
+      probability: 0.15
+      cost_p50: 0
+      cost_p90: 2000
+      confidence: LOW
+      source: "Brukerrapporter"
+
+skoda_enyaq:
+  years: [2021, 2022, 2023]
+  issues:
+    - name: software_bugs
+      probability: 0.20
+      cost_p50: 0
+      cost_p90: 3000
+      confidence: MEDIUM
+      source: "Deler plattform med VW ID.4"
+    - name: 12v_battery
+      probability: 0.15
+      cost_p50: 2000
+      cost_p90: 3500
+      confidence: MEDIUM
+      source: "Forum-rapporter"

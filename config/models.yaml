@@ -1,0 +1,28 @@
+models:
+  - make: Tesla
+    model: Model Y
+    finn_slug: "make=0.8069&model=1.8069.2000496"
+  - make: Tesla
+    model: Model 3
+    finn_slug: "make=0.8069&model=1.8069.2000245"
+  - make: Volkswagen
+    model: ID.4
+    finn_slug: "make=0.8066&model=1.8066.2000539"
+  - make: Nissan
+    model: Leaf
+    finn_slug: "make=0.8048&model=1.8048.2000360"
+  - make: BMW
+    model: i3
+    finn_slug: "make=0.8006&model=1.8006.2000469"
+  - make: Audi
+    model: e-tron
+    finn_slug: "make=0.8003&model=1.8003.2000507"
+  - make: Toyota
+    model: RAV4
+    finn_slug: "make=0.8063&model=1.8063.2000077"
+  - make: Hyundai
+    model: IONIQ 5
+    finn_slug: "make=0.8027&model=1.8027.2000559"
+  - make: Skoda
+    model: Enyaq
+    finn_slug: "make=0.8057&model=1.8057.2000563"

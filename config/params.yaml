@@ -1,0 +1,113 @@
+# Scraper
+scraper:
+  delay_min: 3
+  delay_max: 8
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  max_pages_per_model: 20
+
+# Data quality
+data_quality:
+  min_dq_score: 0.50
+  low_dq_threshold: 0.70
+  unknown_variant_penalty: 0.15
+  missing_km_penalty: 0.30
+  short_text_penalty: 0.10
+  missing_price_penalty: 1.0
+  short_text_threshold: 50
+
+# Comps
+comps:
+  tier1:
+    year_delta: 1
+    km_delta_pct: 0.20
+    min_count: 8
+  tier2:
+    year_delta: 2
+    km_delta_pct: 0.35
+    min_count: 8
+  tier3:
+    year_delta: 3
+    km_delta_pct: 0.50
+    min_count: 5
+  outlier_low_pct: 5
+  outlier_high_pct: 95
+  insufficient_comps_uncertainty: 0.25
+
+# Transaction discount
+transaction_discount:
+  privat: 0.07
+  forhandler: 0.04
+
+# FMV
+fmv:
+  low_n_threshold: 15
+  expansion_per_missing: 0.05
+
+# Adjustments - loaded from adjustments patterns in issue_catalog.yaml
+
+# Rep estimator
+rep:
+  correlation_2_issues: 1.20
+  correlation_3_plus_issues: 1.40
+  uncertainty_no_service: 1.25
+  uncertainty_as_is: 1.40
+  uncertainty_short_text: 1.15
+  uncertainty_low_dq: 1.20
+  short_text_threshold: 100
+
+# Days to sell baselines
+days_to_sell:
+  model_baselines:
+    tesla_model_y: 23
+    tesla_model_3: 25
+    vw_id4: 25
+    nissan_leaf: 28
+    bmw_i3: 35
+    audi_etron: 30
+    toyota_rav4: 20
+    hyundai_ioniq5: 26
+    skoda_enyaq: 26
+    default_ev: 28
+    default_ice: 22
+  p90_multiplier: 2.2
+  bull_multiplier: 0.6
+
+# Carry / capital cost
+carry:
+  interest_rate: 0.08
+  establishment_fee: 1500
+  target_return_equity: 0.18
+
+# Profit
+profit:
+  negotiation_discount: 0.05
+  sales_friction_base: 0.015
+  sales_friction_bear: 0.025
+  sales_friction_bull: 0.010
+  sales_fixed_costs: 1390
+  omregistrering: 5500
+  forsikring_per_month: 1500
+  finn_salgsannonse: 590
+
+# MPP
+mpp:
+  target_profit: 20000
+  max_loss_bear: -10000
+  default_ltv: 0.80
+
+# Classifier thresholds
+classifier:
+  green_profit_base: 15000
+  green_profit_bear: -5000
+  yellow_profit_base: 10000
+  yellow_profit_bear: -15000
+  orange_profit_base: 5000
+  orange_profit_bear: -25000
+  white_profit_base: 0
+  white_profit_bear: -25000
+  hard_pass_bear: -30000
+
+# Health monitoring
+health:
+  min_listings_pct_of_previous: 0.50
+  max_price_change_pct: 0.15

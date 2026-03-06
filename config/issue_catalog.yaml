@@ -1,0 +1,121 @@
+issues:
+  ac_defekt:
+    patterns: ["ac virker ikke", "ac defekt", "klima fungerer ikke", "klimaanlegg"]
+    p50: 7000
+    p90: 14000
+  trenger_service:
+    patterns: ["trenger service", "service forfalt"]
+    p50: 5000
+    p90: 10000
+  rust:
+    patterns: ["rust"]
+    p50: 15000
+    p90: 40000
+  steinsprut:
+    patterns: ["steinsprut", "frontrute"]
+    p50: 3000
+    p90: 6000
+  lakkskade:
+    patterns: ["lakkskade", "lakk", "maling skadet"]
+    p50: 5000
+    p90: 12000
+  batteri_issue:
+    patterns: ["batteri", "rekkevidde redusert"]
+    p50: 10000
+    p90: 45000
+  varsel_feilkode:
+    patterns: ["varsel", "feilkode", "dashboardlys", "feilmelding"]
+    p50: 3000
+    p90: 15000
+  girkasse:
+    patterns: ["girkasse", "gear", "automat problem"]
+    p50: 8000
+    p90: 30000
+
+adjustments:
+  dekk:
+    nye_vinter_og_sommer:
+      patterns: ["nye dekk", "nye vinter og sommer", "nytt dekkesett", "4 nye dekk"]
+      adjustment: 8000
+    nye_vinterdekk:
+      patterns: ["nye vinterdekk", "nytt sett vinterdekk"]
+      adjustment: 5000
+    slitte_dekk:
+      patterns: ["slitte dekk", "dekk ma byttes", "lite monster"]
+      adjustment: -6000
+    mangler_sett:
+      patterns: ["mangler vinterdekk", "mangler sommerdekk", "kun ett sett"]
+      adjustment: -8000
+
+  eu_kontroll:
+    godkjent_fersk:
+      patterns: ["eu godkjent", "eu kontroll ok", "nylig eu"]
+      adjustment: 2500
+    forfalt:
+      patterns: ["eu forfalt", "eu utgatt", "trenger eu", "eu kontroll utgatt"]
+      adjustment: -4000
+    ikke_nevnt:
+      patterns: []
+      adjustment: -1000
+
+  service:
+    full_historikk:
+      patterns: ["full servicehistorikk", "fullt servicehefte", "alle servicer tatt", "komplett service"]
+      adjustment: 10000
+    delvis:
+      patterns: ["noe service", "delvis service"]
+      adjustment: 0
+    ingen:
+      patterns: ["ingen servicehistorikk", "ingen servicepapirer", "uten service"]
+      adjustment: -12000
+    forfalt:
+      patterns: ["service forfalt", "trenger service", "service ma tas"]
+      adjustment: -8000
+
+  batteri_soh:
+    over_90:
+      patterns: ["soh 9", "batterikapasitet 9", "battery health 9"]
+      adjustment: 0
+    "85_90":
+      patterns: ["soh 8[5-9]", "batterikapasitet 8[5-9]"]
+      adjustment: -10000
+    "80_85":
+      patterns: ["soh 8[0-4]", "batterikapasitet 8[0-4]"]
+      adjustment: -25000
+    under_80:
+      patterns: ["soh [1-7]", "batterikapasitet [1-7]"]
+      adjustment: -50000
+    ikke_oppgitt:
+      patterns: []
+      adjustment: -15000
+    garanti_gjenstar:
+      patterns: ["batterigaranti", "garanti pa batteri", "garantien gjelder"]
+      adjustment: 15000
+
+  utstyr:
+    hengerfeste:
+      patterns: ["hengerfeste", "tilhengerfeste"]
+      adjustment: 7000
+    varmepumpe:
+      patterns: ["varmepumpe"]
+      adjustment: 10000
+    panoramatak:
+      patterns: ["panorama", "glasstak"]
+      adjustment: 4000
+    skinninteri_r:
+      patterns: ["skinninteri", "skinn", "leather"]
+      adjustment: 5000
+
+  skade:
+    smaskader:
+      patterns: ["smaskader", "liten skade", "sma riper"]
+      adjustment: -8000
+    bulk_riper:
+      patterns: ["bulk", "bulker", "ripe", "riper"]
+      adjustment: -5000
+    rust:
+      patterns: ["rust", "rustskade"]
+      adjustment: -30000
+    selges_som_den_er:
+      patterns: ["selges som den er", "as is", "uten garanti"]
+      adjustment: -15000

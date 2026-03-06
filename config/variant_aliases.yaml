@@ -1,0 +1,52 @@
+tesla_model_y:
+  long_range: ["long range", "lr", "langrekkevidde", "long range awd", "lr awd"]
+  performance: ["performance", "perf"]
+  standard_range: ["standard range", "sr", "standard", "rwd", "standard range plus"]
+
+tesla_model_3:
+  long_range: ["long range", "lr", "langrekkevidde"]
+  performance: ["performance", "perf"]
+  standard_range: ["standard range", "sr", "standard", "standard range plus", "sr+"]
+
+vw_id4:
+  pro: ["pro", "pro performance"]
+  pro_s: ["pro s"]
+  gtx: ["gtx"]
+  pure: ["pure"]
+
+nissan_leaf:
+  "24kwh": ["24 kwh", "24kwh", "visia", "acenta 24"]
+  "30kwh": ["30 kwh", "30kwh", "tekna 30"]
+  "40kwh": ["40 kwh", "40kwh", "e+", "acenta 40", "n-connecta 40"]
+  "62kwh": ["62 kwh", "62kwh", "e+ 62", "tekna 62"]
+
+bmw_i3:
+  "60ah": ["60 ah", "60ah"]
+  "94ah": ["94 ah", "94ah", "94"]
+  "120ah": ["120 ah", "120ah", "120"]
+  "rex": ["rex", "range extender", "i3 rex", "i3s rex"]
+  "i3s": ["i3s"]
+
+audi_etron:
+  "50": ["50", "50 quattro"]
+  "55": ["55", "55 quattro"]
+  "s": ["s", "s line"]
+  "sportback_50": ["sportback 50"]
+  "sportback_55": ["sportback 55"]
+
+toyota_rav4:
+  hybrid: ["hybrid", "hybr"]
+  plug_in_hybrid: ["plug-in", "phev", "plug-in hybrid"]
+  adventure: ["adventure"]
+
+hyundai_ioniq5:
+  standard_range: ["standard range", "sr", "58 kwh"]
+  long_range: ["long range", "lr", "77 kwh", "77.4 kwh"]
+  long_range_awd: ["long range awd", "lr awd", "4wd"]
+
+skoda_enyaq:
+  "60": ["60", "iv 60"]
+  "80": ["80", "iv 80"]
+  "80x": ["80x", "iv 80x"]
+  rs: ["rs", "iv rs"]
+  coupe: ["coupe", "coupé"]
