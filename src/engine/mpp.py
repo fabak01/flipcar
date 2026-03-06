@@ -37,7 +37,7 @@ def calculate_mpp(
         params: Optional params override.
 
     Returns:
-        Dict with mpp, mpp_base, mpp_bear, and required_discount.
+        Dict with mpp, mpp_base, and mpp_bear.
     """
     if params is None:
         params = _load_params()

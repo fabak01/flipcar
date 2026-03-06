@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from src.engine.carry import calculate_all_scenarios
 from src.engine.profit import calculate_profit
 from src.engine.mpp import calculate_mpp
 from src.engine.classifier import classify_deal
+from src.engine.battery_soh import calculate_soh_scenarios
 from src.output.formatter import build_audit_record, write_csv, write_jsonl
 from src.output.telegram_bot import send_deal_alert, send_health_alert
 from src.db.supabase_client import (
@@ -51,6 +53,21 @@ def load_all_params() -> dict[str, Any]:
     """Load all parameters from config."""
     with open(CONFIG_DIR / "params.yaml") as f:
         return yaml.safe_load(f)
+
+
+def _extract_reported_soh(listing: dict[str, Any]) -> float | None:
+    """Extract SOH percentage if explicitly mentioned in listing text/title."""
+    text = f"{listing.get('title', '')} {listing.get('listing_text', '')}".lower()
+    match = re.search(r"(?:soh|battery\s*health|batterikapasitet)\s*[:=]?\s*(\d{2})(?:[.,](\d))?\s*%?", text)
+    if not match:
+        return None
+
+    value = float(match.group(1))
+    if match.group(2):
+        value += float(f"0.{match.group(2)}")
+    if 40 <= value <= 100:
+        return value
+    return None
 
 
 def analyze_listing(
@@ -96,13 +113,28 @@ def analyze_listing(
         # h. MPP
         mpp_data = calculate_mpp(fmv_adjusted, rep, days, params)
 
-        # i. Classify
-        classification = classify_deal(profit_result, comp_result, listing, params)
+        # i. EV SOH sensitivity (does not hard-gate classification)
+        fuel_text = str(listing.get("fuel_type", "")).lower()
+        is_ev = "el" in fuel_text or "elektr" in fuel_text
+        soh_reported = _extract_reported_soh(listing)
+        scenario_80 = profit_result.get("scenarios", {}).get("80pct_loan", {})
+        soh_analysis = calculate_soh_scenarios(
+            base_profit=scenario_80.get("profit_base", 0),
+            base_fmv_p50=fmv_adjusted.get("adjusted_p50", 0),
+            is_ev=is_ev,
+            soh_reported=soh_reported,
+            make=str(listing.get("make", "")),
+            model=str(listing.get("model", "")),
+            year=int(listing.get("year") or 0),
+        )
+
+        # j. Classify
+        classification = classify_deal(profit_result, comp_result, listing, params, soh_analysis=soh_analysis)
 
         # Build audit record
         record = build_audit_record(
             listing, comp_result, fmv_raw, fmv_adjusted,
-            rep, days, profit_result, mpp_data, classification,
+            rep, days, profit_result, mpp_data, classification, soh_analysis=soh_analysis,
         )
 
         logger.info(
@@ -156,7 +188,7 @@ def check_health(
             prev_count = prev_per_model.get(model_key, 0)
             if prev_count > 0:
                 change = abs(count - prev_count) / prev_count
-                if change > health_params["max_price_change_pct"]:
+                if change > health_params["max_listing_count_change_pct"]:
                     if status != "ALARM":
                         status = "WARNING"
                     send_health_alert(
@@ -214,6 +246,7 @@ def run() -> None:
             "fmv": record.get("fmv", {}),
             "comps": record.get("comps", {}),
             "mpp_data": {"mpp": record.get("mpp", 0)},
+            "soh_analysis": record.get("soh_analysis", {"applicable": False}),
         }
         if send_deal_alert(alert_data):
             if "KONTAKT" in record.get("classification", ""):
