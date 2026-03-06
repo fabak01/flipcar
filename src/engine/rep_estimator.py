@@ -194,15 +194,6 @@ def estimate_repairs(
         uncertainty_multiplier *= rep_params.get("uncertainty_low_dq", 1.20)
         flags.append("low_dq_score")
 
-    # Nissan Leaf hard gate
-    make = listing.get("make", "")
-    model_name = listing.get("model", "")
-    if _model_key(make, model_name) == "nissan_leaf":
-        soh_mentioned = any("soh" in p.get("matched_pattern", "") for p in text_issues)
-        if not soh_mentioned and "soh" not in text and "batterikapasitet" not in text:
-            uncertainty_multiplier = max(uncertainty_multiplier, 0.80)
-            flags.append("nissan_leaf_no_soh")
-
     # Totals
     rep_p50 = lag1_p50 + lag2_expected
     rep_p90 = (lag1_p90 + lag2_p90) * correlation_factor * uncertainty_multiplier

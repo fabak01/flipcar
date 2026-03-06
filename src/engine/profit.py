@@ -44,9 +44,9 @@ def calculate_profit(
     profit_params = params["profit"]
 
     # Entry
-    listing_price = listing.get("price_nok", 0)
-    negotiation_discount = profit_params["negotiation_discount"]
-    purchase_price = listing_price * (1 - negotiation_discount)
+    listing_price_nok = listing.get("price_nok", 0)
+    assumed_negotiation_discount = profit_params["negotiation_discount"]
+    assumed_entry_price = listing_price_nok * (1 - assumed_negotiation_discount)
 
     # Exit prices
     exit_base = (
@@ -78,13 +78,13 @@ def calculate_profit(
     scenarios: dict[str, dict[str, Any]] = {}
 
     for label, ltv in ltv_scenarios.items():
-        carry_base = calculate_carry(purchase_price, days_p50, ltv, params)
-        carry_bear = calculate_carry(purchase_price, days["p90"], ltv, params)
-        carry_bull = calculate_carry(purchase_price, days["bull"], ltv, params)
+        carry_base = calculate_carry(assumed_entry_price, days_p50, ltv, params)
+        carry_bear = calculate_carry(assumed_entry_price, days["p90"], ltv, params)
+        carry_bull = calculate_carry(assumed_entry_price, days["bull"], ltv, params)
 
-        profit_base = exit_base - purchase_price - rep_p50 - carry_base["total_carry"] - total_fees
-        profit_bear = exit_bear - purchase_price - rep_p90 - carry_bear["total_carry"] - total_fees
-        profit_bull = exit_bull - purchase_price - rep_p50 * 0.5 - carry_bull["total_carry"] - total_fees
+        profit_base = exit_base - assumed_entry_price - rep_p50 - carry_base["total_carry"] - total_fees
+        profit_bear = exit_bear - assumed_entry_price - rep_p90 - carry_bear["total_carry"] - total_fees
+        profit_bull = exit_bull - assumed_entry_price - rep_p50 * 0.5 - carry_bull["total_carry"] - total_fees
 
         equity = carry_base["equity_required"]
         roe_base = (profit_base / equity) * (365 / days_p50) if equity > 0 and days_p50 > 0 else None
@@ -102,8 +102,9 @@ def calculate_profit(
         }
 
     return {
-        "listing_price": listing_price,
-        "purchase_price": round(purchase_price),
+        "listing_price_nok": listing_price_nok,
+        "assumed_negotiation_discount": assumed_negotiation_discount,
+        "assumed_entry_price": round(assumed_entry_price),
         "exit_base": round(exit_base),
         "exit_bear": round(exit_bear),
         "exit_bull": round(exit_bull),

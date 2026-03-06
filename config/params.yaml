@@ -3,7 +3,7 @@ scraper:
   delay_min: 3
   delay_max: 8
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-  max_pages_per_model: 20
+  max_pages_per_model: 100
 
 # Data quality
 data_quality:
@@ -110,4 +110,4 @@ classifier:
 # Health monitoring
 health:
   min_listings_pct_of_previous: 0.50
-  max_price_change_pct: 0.15
+  max_listing_count_change_pct: 0.15
