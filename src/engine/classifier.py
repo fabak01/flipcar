@@ -22,6 +22,7 @@ def classify_deal(
     comp_result: dict[str, Any],
     listing: dict[str, Any],
     params: dict[str, Any] | None = None,
+    soh_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Classify a deal based on profit scenarios.
 

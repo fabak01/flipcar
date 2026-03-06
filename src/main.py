@@ -1,7 +1,7 @@
-"""Main orchestrator: scrape, analyze, classify, notify."""
+"""Main orchestrator with two-level architecture (screening + deep underwriting)."""
 
-import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,131 +10,71 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.scraper.finn_scraper import flatten_results, load_config, scrape_all_models
-from src.scraper.svv_lookup import enrich_listing
-from src.engine.comps import find_comps
-from src.engine.fmv import calculate_fmv
-from src.engine.adjustments import apply_adjustments, detect_adjustments
-from src.engine.rep_estimator import estimate_repairs
-from src.engine.days_to_sell import estimate_days
-from src.engine.carry import calculate_all_scenarios
-from src.engine.profit import calculate_profit
-from src.engine.mpp import calculate_mpp
-from src.engine.classifier import classify_deal
-from src.output.formatter import build_audit_record, write_csv, write_jsonl
-from src.output.telegram_bot import send_deal_alert, send_health_alert
 from src.db.supabase_client import (
+    get_cached_text_analysis,
     get_previous_run,
     log_scrape_run,
     upsert_analysis,
     upsert_raw_listing,
+    upsert_text_analysis_cache,
 )
+from src.engine.battery_soh import calculate_soh_sensitivity
+from src.engine.classifier import classify_deal
+from src.engine.comps import find_comps
+from src.engine.days_to_sell import estimate_days_to_sell
+from src.engine.pristips import get_pristips_cached
+from src.engine.profit import calculate_profit
+from src.engine.rep_estimator import estimate_repairs
+from src.engine.screener import screen_listing
+from src.engine.text_analyzer import analyze_listing_text
+from src.engine.underwriting import calculate_underwritten_exit
+from src.output.formatter import build_audit_record, write_csv, write_jsonl
+from src.output.telegram_bot import send_deal_alert, send_health_alert
+from src.scraper.finn_scraper import flatten_results, load_config, scrape_all_models
 
 CONFIG_DIR = PROJECT_ROOT / "config"
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(PROJECT_ROOT / "flipcar.log"),
-    ],
+    handlers=[logging.StreamHandler(), logging.FileHandler(PROJECT_ROOT / "flipcar.log")],
 )
 logger = logging.getLogger(__name__)
 
 
 def load_all_params() -> dict[str, Any]:
-    """Load all parameters from config."""
     with open(CONFIG_DIR / "params.yaml") as f:
         return yaml.safe_load(f)
 
 
-def analyze_listing(
-    listing: dict[str, Any],
-    all_listings: list[dict[str, Any]],
-    params: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Run the full analysis pipeline on a single listing.
-
-    Args:
-        listing: Normalized listing dict.
-        all_listings: All listings for comp selection.
-        params: Full params dict.
-
-    Returns:
-        Complete audit record, or None on failure.
-    """
-    listing_id = listing.get("listing_id", "unknown")
-
-    try:
-        # a. SVV enrichment
-        enrich_listing(listing)
-
-        # b. Find comps
-        comp_result = find_comps(listing, all_listings, params)
-
-        # c. Calculate FMV
-        fmv_raw = calculate_fmv(comp_result, params)
-
-        # d. Detect and apply adjustments
-        adjustments = detect_adjustments(listing)
-        fmv_adjusted = apply_adjustments(fmv_raw, adjustments)
-
-        # e. Estimate repairs
-        rep = estimate_repairs(listing, params=params)
-
-        # f. Days to sell
-        days = estimate_days(listing, fmv_adjusted["adjusted_p50"], params)
-
-        # g. Profit calculation
-        profit_result = calculate_profit(listing, fmv_adjusted, rep, days, params)
-
-        # h. MPP
-        mpp_data = calculate_mpp(fmv_adjusted, rep, days, params)
-
-        # i. Classify
-        classification = classify_deal(profit_result, comp_result, listing, params)
-
-        # Build audit record
-        record = build_audit_record(
-            listing, comp_result, fmv_raw, fmv_adjusted,
-            rep, days, profit_result, mpp_data, classification,
-        )
-
-        logger.info(
-            "Analyzed %s: %s %s %s - %s (base: %s kr)",
-            listing_id,
-            listing.get("make"),
-            listing.get("model"),
-            listing.get("variant"),
-            classification["classification"],
-            profit_result.get("scenarios", {}).get("80pct_loan", {}).get("profit_base"),
-        )
-
-        return record
-
-    except Exception as e:
-        logger.error("Failed to analyze listing %s: %s", listing_id, e, exc_info=True)
+def _extract_reported_soh(listing: dict[str, Any], ai_analysis: dict[str, Any] | None = None) -> float | None:
+    if ai_analysis:
+        val = ai_analysis.get("condition_summary", {}).get("batteri_soh")
+        if isinstance(val, (int, float)):
+            return float(val)
+    text = f"{listing.get('title', '')} {listing.get('listing_text', '')}".lower()
+    m = re.search(r"(?:soh|battery\s*health|batterikapasitet)\s*[:=]?\s*(\d{2})(?:[.,](\d))?", text)
+    if not m:
         return None
+    value = float(m.group(1))
+    if m.group(2):
+        value += float(f"0.{m.group(2)}")
+    return value if 40 <= value <= 100 else None
 
 
-def check_health(
-    results: dict[str, list[dict[str, Any]]],
-    params: dict[str, Any],
-) -> str:
-    """Check scrape health and send alerts if needed.
+def _fuel_is_ev_or_phev(listing: dict[str, Any], model_cfg: dict[str, Any] | None = None) -> bool:
+    fuel = str(listing.get("fuel_type", "")).lower()
+    if any(k in fuel for k in ["el", "elektr", "electric", "plugin", "plug-in", "phev"]):
+        return True
+    if model_cfg and model_cfg.get("fuel_type") in {"electric", "plugin_hybrid"}:
+        return True
+    return False
 
-    Args:
-        results: Per-model scrape results.
-        params: Full params dict.
 
-    Returns:
-        Health status string: 'OK', 'WARNING', or 'ALARM'.
-    """
+def check_health(results: dict[str, list[dict[str, Any]]], params: dict[str, Any]) -> str:
     health_params = params["health"]
     total = sum(len(v) for v in results.values())
     per_model = {k: len(v) for k, v in results.items()}
@@ -146,99 +86,123 @@ def check_health(
         prev_total = previous.get("total_listings", 0)
         if prev_total > 0 and total < prev_total * health_params["min_listings_pct_of_previous"]:
             status = "ALARM"
-            send_health_alert(
-                f"Listings dropped: {total} vs previous {prev_total} "
-                f"({total/prev_total:.0%})"
-            )
+            send_health_alert(f"Listings dropped: {total} vs previous {prev_total} ({total/prev_total:.0%})")
 
         prev_per_model = previous.get("listings_per_model", {})
         for model_key, count in per_model.items():
             prev_count = prev_per_model.get(model_key, 0)
             if prev_count > 0:
                 change = abs(count - prev_count) / prev_count
-                if change > health_params["max_price_change_pct"]:
+                if change > health_params["max_listing_count_change_pct"]:
                     if status != "ALARM":
                         status = "WARNING"
-                    send_health_alert(
-                        f"Model {model_key}: count changed {prev_count} -> {count} "
-                        f"({change:.0%})"
-                    )
+                    send_health_alert(f"Model {model_key}: count changed {prev_count} -> {count} ({change:.0%})")
 
-    logger.info("Health check: %s (total=%d)", status, total)
     return status
 
 
-def run() -> None:
-    """Execute the full pipeline: scrape -> analyze -> output."""
+def run_daily() -> None:
     load_dotenv()
     params = load_all_params()
 
-    logger.info("=== FlipCar Pipeline Start ===")
-    start_time = datetime.now(timezone.utc)
-
-    # 1. Scrape
-    logger.info("Step 1: Scraping FINN.no...")
+    logger.info("=== FlipCar Daily Run Start ===")
     config = load_config()
+    model_map = {f"{m['make']}_{m['model']}".lower().replace(' ', '_').replace('-', '').replace('.', ''): m for m in config["models"]}
+
     results = scrape_all_models(config)
     all_listings = flatten_results(results)
-    logger.info("Scraped %d total listings", len(all_listings))
 
-    # 2. Store raw listings
-    logger.info("Step 2: Storing raw listings...")
     for listing in all_listings:
         upsert_raw_listing(listing)
 
-    # 3. Analyze each listing
-    logger.info("Step 3: Analyzing listings...")
+    shortlist: list[dict[str, Any]] = []
+    for listing in all_listings:
+        screen = screen_listing(listing, all_listings, params)
+        listing["screening"] = screen
+        if screen["passes_screening"]:
+            shortlist.append(listing)
+
+    logger.info("Screened %d listings -> %d shortlisted", len(all_listings), len(shortlist))
+
     audit_records: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    for listing in all_listings:
-        record = analyze_listing(listing, all_listings, params)
-        if record:
+    for listing in shortlist:
+        try:
+            regnr = listing.get("registration_number")
+            km = listing.get("km") or 0
+            pristips = get_pristips_cached(regnr, int(km)) if regnr and km else None
+
+            cached_ai = get_cached_text_analysis(listing.get("listing_id", ""))
+            if cached_ai:
+                ai = cached_ai
+            else:
+                ai = analyze_listing_text(listing.get("listing_text", ""), listing.get("make", ""), listing.get("model", ""), int(listing.get("year") or 0))
+                upsert_text_analysis_cache(listing.get("listing_id", ""), ai)
+
+            comp_result = find_comps(listing, all_listings, params)
+            underwriting = calculate_underwritten_exit(pristips, ai, comp_result, listing, params)
+
+            fmv_adjusted = {
+                "adjusted_p10": underwriting.get("underwritten_exit_bear", 0),
+                "adjusted_p50": underwriting.get("underwritten_exit_base", 0),
+                "adjusted_p90": underwriting.get("underwritten_exit_bull", 0),
+                "adjustments": [],
+            }
+            fmv_raw = {"raw_p10": fmv_adjusted["adjusted_p10"], "raw_p50": fmv_adjusted["adjusted_p50"], "raw_p90": fmv_adjusted["adjusted_p90"]}
+
+            rep = estimate_repairs(listing, params=params)
+            days_new = estimate_days_to_sell(listing, pristips, params)
+            days = {"p50": days_new["days_p50"], "p90": days_new["days_p90"], "bull": days_new["days_bull"], "source": days_new["source"]}
+            profit = calculate_profit(listing, fmv_adjusted, rep, days, params, pristips=pristips)
+
+            mpp = min(
+                profit["assumed_entry_price"],
+                max(0, int(profit["assumed_entry_price"] - max(0, profit["scenarios"]["80pct_loan"]["profit_base"]) + params["mpp"]["target_profit"])),
+            )
+            mpp_data = {"mpp": int(mpp), "mpp_base": int(mpp), "mpp_bear": int(mpp)}
+
+            base_profit = profit["scenarios"]["80pct_loan"]["profit_base"]
+            model_key = f"{listing.get('make','')}_{listing.get('model','')}".lower().replace(" ", "_").replace("-", "").replace(".", "")
+            model_cfg = model_map.get(model_key)
+            is_ev = _fuel_is_ev_or_phev(listing, model_cfg)
+            soh_reported = _extract_reported_soh(listing, ai)
+            soh = calculate_soh_sensitivity(base_profit, is_ev, soh_reported, listing.get("make", ""), listing.get("model", ""), int(listing.get("year") or 0))
+
+            classification = classify_deal(profit, comp_result, listing, params, soh_analysis=soh)
+
+            record = build_audit_record(listing, comp_result, fmv_raw, fmv_adjusted, rep, days, profit, mpp_data, classification, soh_analysis=soh)
+            record["screening"] = listing.get("screening", {})
+            record["pristips"] = pristips
+            record["ai_analysis"] = ai
+            record["underwriting"] = underwriting
+
             audit_records.append(record)
-            # Store analysis
             upsert_analysis(record)
-        else:
-            errors.append(f"Failed: {listing.get('listing_id')}")
 
-    logger.info("Analyzed %d / %d listings", len(audit_records), len(all_listings))
+        except Exception as e:
+            errors.append(f"{listing.get('listing_id')}: {e}")
 
-    # 4. Send Telegram alerts
-    logger.info("Step 4: Sending alerts...")
     alerts_sent = 0
     for record in audit_records:
-        # Flatten for telegram format
-        alert_data = {
-            **record,
-            "fmv": record.get("fmv", {}),
-            "comps": record.get("comps", {}),
-            "mpp_data": {"mpp": record.get("mpp", 0)},
-        }
-        if send_deal_alert(alert_data):
-            if "KONTAKT" in record.get("classification", ""):
-                alerts_sent += 1
+        alert_data = {**record, "fmv": record.get("fmv", {}), "comps": record.get("comps", {}), "mpp_data": {"mpp": record.get("mpp", 0)}, "soh_analysis": record.get("soh_analysis", {})}
+        if send_deal_alert(alert_data) and "KONTAKT" in record.get("classification", ""):
+            alerts_sent += 1
 
-    logger.info("Sent %d Telegram alerts", alerts_sent)
+    write_jsonl(audit_records, str(PROJECT_ROOT / "deals.jsonl"))
+    write_csv(audit_records, str(PROJECT_ROOT / "deals.csv"))
 
-    # 5. Write output files
-    logger.info("Step 5: Writing output files...")
-    output_dir = PROJECT_ROOT
-    write_jsonl(audit_records, str(output_dir / "deals.jsonl"))
-    write_csv(audit_records, str(output_dir / "deals.csv"))
-
-    # 6. Health check
-    logger.info("Step 6: Health check...")
     health_status = check_health(results, params)
     per_model = {k: len(v) for k, v in results.items()}
     log_scrape_run(len(all_listings), per_model, errors, health_status)
 
-    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
-    logger.info(
-        "=== FlipCar Pipeline Complete === (%.1fs, %d listings, %d analyzed, %d alerts)",
-        elapsed, len(all_listings), len(audit_records), alerts_sent,
-    )
+    logger.info("=== FlipCar Daily Run Complete === (%d scraped, %d shortlisted, %d analyzed, %d alerts)", len(all_listings), len(shortlist), len(audit_records), alerts_sent)
+
+
+def run() -> None:
+    """Backward-compatible entrypoint."""
+    run_daily()
 
 
 if __name__ == "__main__":
-    run()
+    run_daily()

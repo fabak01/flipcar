@@ -20,6 +20,7 @@ def build_audit_record(
     profit_result: dict[str, Any],
     mpp_data: dict[str, Any],
     classification: dict[str, Any],
+    soh_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a full audit trail record for a single listing.
 
@@ -33,13 +34,24 @@ def build_audit_record(
         profit_result: Profit calculation result.
         mpp_data: MPP calculation result.
         classification: Classification result.
+        soh_analysis: Optional EV SOH sensitivity analysis.
 
     Returns:
         Complete audit dict ready for JSON serialization.
     """
-    listing_price = listing.get("price_nok", 0)
+    listing_price_nok = profit_result.get("listing_price_nok", listing.get("price_nok", 0))
+    assumed_entry_price = profit_result.get("assumed_entry_price", 0)
+    assumed_negotiation_discount = profit_result.get("assumed_negotiation_discount")
     mpp_val = mpp_data.get("mpp", 0)
-    required_discount = f"{(1 - mpp_val / listing_price):.1%}" if listing_price > 0 else "N/A"
+
+    required_discount_to_mpp = (
+        1 - (mpp_val / listing_price_nok)
+        if listing_price_nok and listing_price_nok > 0 else None
+    )
+    required_discount_to_assumed_entry = (
+        1 - (assumed_entry_price / listing_price_nok)
+        if listing_price_nok and listing_price_nok > 0 else None
+    )
 
     return {
         "listing_id": listing.get("listing_id"),
@@ -49,7 +61,7 @@ def build_audit_record(
         "variant": listing.get("variant"),
         "year": listing.get("year"),
         "km": listing.get("km"),
-        "price_nok": listing_price,
+        "listing_price_nok": listing_price_nok,
         "location": listing.get("location_city"),
         "dq_score": listing.get("dq_score"),
         "comps": {
@@ -85,8 +97,12 @@ def build_audit_record(
             "bull": days.get("bull"),
         },
         "scenarios": profit_result.get("scenarios", {}),
+        "assumed_entry_price": assumed_entry_price,
+        "assumed_negotiation_discount": assumed_negotiation_discount,
         "mpp": mpp_val,
-        "required_discount": required_discount,
+        "required_discount_to_mpp": required_discount_to_mpp,
+        "required_discount_to_assumed_entry": required_discount_to_assumed_entry,
+        "soh_analysis": soh_analysis or {"applicable": False},
         "classification": classification.get("classification"),
         "loan_recommendation": classification.get("loan_recommendation"),
         "flags": classification.get("flags", []),
@@ -126,9 +142,9 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
     )
 
     columns = [
-        "listing_id", "make", "model", "variant", "year", "km", "price_nok",
+        "listing_id", "make", "model", "variant", "year", "km", "listing_price_nok",
         "location", "classification", "profit_base_80", "profit_bear_80",
-        "roe_base_80", "mpp", "required_discount", "n_comps", "tier",
+        "roe_base_80", "mpp", "required_discount_to_mpp", "n_comps", "tier",
         "days_p50", "loan_recommendation", "listing_url",
     ]
 
@@ -146,14 +162,14 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
                 "variant": r.get("variant"),
                 "year": r.get("year"),
                 "km": r.get("km"),
-                "price_nok": r.get("price_nok"),
+                "listing_price_nok": r.get("listing_price_nok"),
                 "location": r.get("location"),
                 "classification": r.get("classification"),
                 "profit_base_80": s80.get("profit_base"),
                 "profit_bear_80": s80.get("profit_bear"),
                 "roe_base_80": s80.get("roe_base"),
                 "mpp": r.get("mpp"),
-                "required_discount": r.get("required_discount"),
+                "required_discount_to_mpp": r.get("required_discount_to_mpp"),
                 "n_comps": r.get("comps", {}).get("n_comps"),
                 "tier": r.get("comps", {}).get("tier"),
                 "days_p50": r.get("days", {}).get("p50"),

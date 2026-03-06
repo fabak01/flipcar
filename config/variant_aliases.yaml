@@ -1,52 +1,74 @@
-tesla_model_y:
-  long_range: ["long range", "lr", "langrekkevidde", "long range awd", "lr awd"]
-  performance: ["performance", "perf"]
-  standard_range: ["standard range", "sr", "standard", "rwd", "standard range plus"]
-
 tesla_model_3:
-  long_range: ["long range", "lr", "langrekkevidde"]
-  performance: ["performance", "perf"]
-  standard_range: ["standard range", "sr", "standard", "standard range plus", "sr+"]
+  long_range: ["long range", "lr", "langrekkevidde", "long range awd"]
+  performance: ["performance", "perf", "model 3 performance"]
+  standard_range: ["standard range", "sr", "rwd", "standard range plus", "sr+"]
 
-vw_id4:
-  pro: ["pro", "pro performance"]
-  pro_s: ["pro s"]
-  gtx: ["gtx"]
-  pure: ["pure"]
+tesla_model_y:
+  long_range: ["long range", "lr", "langrekkevidde", "long range awd", "awd"]
+  performance: ["performance", "perf", "model y performance"]
+  standard_range: ["standard range", "sr", "rwd", "bakhjulsdrift"]
+
+volkswagen_golf:
+  r: ["golf r", "r-line", "r line", "4motion r"]
+  gti: ["gti", "golf gti", "clubsport"]
+  gte: ["gte", "plug-in hybrid", "plugin hybrid"]
+  tsi: ["tsi", "1.0 tsi", "1.2 tsi", "1.4 tsi", "1.5 tsi", "2.0 tsi"]
+  tdi: ["tdi", "1.6 tdi", "2.0 tdi"]
+  etsi: ["etsi", "e-tsi", "mild hybrid"]
+  e_golf: ["e-golf", "egolf", "electric"]
+
+skoda_octavia:
+  rs: ["rs", "vrs", "octavia rs"]
+  scout: ["scout", "4x4 scout"]
+  style: ["style", "style business"]
+  ambition: ["ambition"]
+  elegance: ["elegance"]
+  tsi: ["tsi", "1.4 tsi", "1.5 tsi", "2.0 tsi"]
+  tdi: ["tdi", "2.0 tdi", "1.6 tdi"]
+  iv: ["iv", "iV", "plug-in", "phev"]
+
+toyota_yaris:
+  hybrid: ["hybrid", "yaris hybrid", "1.5 hybrid"]
+  gr: ["gr", "gr sport", "gr-s"]
+  active: ["active"]
+  style: ["style"]
+
+toyota_corolla:
+  hybrid: ["hybrid", "1.8 hybrid", "2.0 hybrid"]
+  touring_sports: ["touring sports", "stasjonsvogn"]
+  active: ["active"]
+  style: ["style"]
+  executive: ["executive"]
+
+mitsubishi_outlander_phev:
+  instyle: ["instyle", "instyle+", "instyle pluss"]
+  intense: ["intense"]
+  invite: ["invite"]
+  phev: ["phev", "plug-in", "plugin hybrid"]
+
+bmw_3serie:
+  "318i": ["318i", "318 i"]
+  "320i": ["320i", "320 i"]
+  "330i": ["330i", "330 i"]
+  "320d": ["320d", "320 d"]
+  "330d": ["330d", "330 d"]
+  "330e": ["330e", "330 e", "plugin hybrid", "plug-in hybrid"]
+  xdrive: ["xdrive", "x-drive", "4x4"]
+  m_sport: ["m sport", "msport", "m-sport"]
 
 nissan_leaf:
   "24kwh": ["24 kwh", "24kwh", "visia", "acenta 24"]
   "30kwh": ["30 kwh", "30kwh", "tekna 30"]
-  "40kwh": ["40 kwh", "40kwh", "e+", "acenta 40", "n-connecta 40"]
-  "62kwh": ["62 kwh", "62kwh", "e+ 62", "tekna 62"]
+  "40kwh": ["40 kwh", "40kwh", "acenta 40", "n-connecta 40"]
+  "62kwh": ["62 kwh", "62kwh", "e+", "tekna 62", "e+ 62"]
 
-bmw_i3:
-  "60ah": ["60 ah", "60ah"]
-  "94ah": ["94 ah", "94ah", "94"]
-  "120ah": ["120 ah", "120ah", "120"]
-  "rex": ["rex", "range extender", "i3 rex", "i3s rex"]
-  "i3s": ["i3s"]
-
-audi_etron:
-  "50": ["50", "50 quattro"]
-  "55": ["55", "55 quattro"]
-  "s": ["s", "s line"]
-  "sportback_50": ["sportback 50"]
-  "sportback_55": ["sportback 55"]
-
-toyota_rav4:
-  hybrid: ["hybrid", "hybr"]
-  plug_in_hybrid: ["plug-in", "phev", "plug-in hybrid"]
-  adventure: ["adventure"]
-
-hyundai_ioniq5:
-  standard_range: ["standard range", "sr", "58 kwh"]
-  long_range: ["long range", "lr", "77 kwh", "77.4 kwh"]
-  long_range_awd: ["long range awd", "lr awd", "4wd"]
-
-skoda_enyaq:
-  "60": ["60", "iv 60"]
-  "80": ["80", "iv 80"]
-  "80x": ["80x", "iv 80x"]
-  rs: ["rs", "iv rs"]
-  coupe: ["coupe", "coupé"]
+mercedes_benz_eklasse:
+  "e200": ["e200", "e 200"]
+  "e220d": ["e220d", "e 220 d"]
+  "e300": ["e300", "e 300"]
+  "e300e": ["e300e", "e 300 e", "plug-in hybrid", "phev"]
+  "e350e": ["e350e", "e 350 e", "plug-in hybrid", "phev"]
+  "e63": ["e63", "e 63", "amg"]
+  avantgarde: ["avantgarde"]
+  amg_line: ["amg line", "amg-line"]
+  all_terrain: ["all-terrain", "all terrain"]

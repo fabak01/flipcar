@@ -8,16 +8,18 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.scraper.finn_scraper import normalize_variant, compute_dq_score, _model_key
+from src.scraper.finn_scraper import normalize_variant, compute_dq_score, _model_key, _get_next_page_url
 from src.engine.comps import find_comps
 from src.engine.fmv import calculate_fmv
-from src.engine.adjustments import detect_adjustments, apply_adjustments
+from src.engine.adjustments import detect_adjustments, apply_adjustments, evaluate_eu_status
 from src.engine.rep_estimator import detect_text_issues, get_model_issues, estimate_repairs
 from src.engine.days_to_sell import estimate_days, price_factor, season_factor
 from src.engine.carry import calculate_carry
 from src.engine.profit import calculate_profit
 from src.engine.mpp import calculate_mpp
 from src.engine.classifier import classify_deal
+from src.engine.battery_soh import calculate_soh_scenarios
+from src.output.formatter import build_audit_record
 
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 
@@ -74,6 +76,23 @@ def comp_listings():
          "price_nok": 380000 + i * 5000, "seller_type": "privat"}
         for i in range(15)
     ]
+
+
+class TestPaginationHelper:
+    def test_next_page_link_preferred(self):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup('<a rel="next" href="/mobility/search/car?page=3">Neste</a>', 'html.parser')
+        assert _get_next_page_url(soup, 'https://www.finn.no/mobility/search/car?page=2') == 'https://www.finn.no/mobility/search/car?page=3'
+
+    def test_page_param_increment_fallback(self):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup('<html></html>', 'html.parser')
+        assert _get_next_page_url(soup, 'https://www.finn.no/mobility/search/car?q=tesla&page=2').endswith('page=3')
+
+    def test_no_next_page_returns_none(self):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup('<html></html>', 'html.parser')
+        assert _get_next_page_url(soup, 'https://www.finn.no/mobility/search/car?q=tesla') is None
 
 
 # --- Variant normalization ---
@@ -204,6 +223,36 @@ class TestAdjustments:
         assert result["adjusted_p90"] > fmv["raw_p90"]  # positive dampened
 
 
+class TestEuStatusEvaluation:
+    def test_future_deadline(self):
+        status, amount = evaluate_eu_status({"eu_kontroll_frist": "2030-01-01"}, {"fresh": False, "overdue": False})
+        assert status in {"godkjent", "godkjent_fersk"}
+        assert amount in {0, 2500}
+
+    def test_passed_deadline(self):
+        status, amount = evaluate_eu_status({"eu_kontroll_frist": "2020-01-01"}, {"fresh": False, "overdue": False})
+        assert status == "forfalt"
+        assert amount == -4000
+
+    def test_recent_approval(self):
+        from datetime import date, timedelta
+        recent = (date.today() - timedelta(days=30)).isoformat()
+        future = (date.today() + timedelta(days=365)).isoformat()
+        status, amount = evaluate_eu_status({"eu_kontroll_sist": recent, "eu_kontroll_frist": future}, {"fresh": False, "overdue": False})
+        assert status == "godkjent_fersk"
+        assert amount == 2500
+
+    def test_missing_svv_positive_text(self):
+        status, amount = evaluate_eu_status({}, {"fresh": True, "overdue": False})
+        assert status == "godkjent_fersk"
+        assert amount == 2500
+
+    def test_missing_everything_default(self):
+        status, amount = evaluate_eu_status({}, {"fresh": False, "overdue": False})
+        assert status == "ikke_nevnt"
+        assert amount == -1000
+
+
 # --- Rep estimator ---
 
 class TestRepEstimator:
@@ -281,6 +330,9 @@ class TestProfit:
         assert "scenarios" in result
         assert "80pct_loan" in result["scenarios"]
         assert "profit_base" in result["scenarios"]["80pct_loan"]
+        assert "listing_price_nok" in result
+        assert "assumed_entry_price" in result
+        assert "assumed_negotiation_discount" in result
 
 
 # --- MPP ---
@@ -327,3 +379,42 @@ class TestClassifier:
         listing = {"dq_score": 0.90}
         result = classify_deal(profit_result, comp_result, listing, params)
         assert "80%" in result["loan_recommendation"]
+
+
+# --- Battery SOH ---
+
+class TestBatterySoh:
+    def test_non_ev_not_applicable(self):
+        out = calculate_soh_scenarios(10000, 300000, False, None, "Toyota", "RAV4", 2020)
+        assert out["applicable"] is False
+
+    def test_ev_with_reported_soh(self):
+        out = calculate_soh_scenarios(15000, 320000, True, 91, "BMW", "i3", 2019)
+        assert out["applicable"] is True
+        assert out["soh_missing"] is False
+        assert out["soh_reported"] == 91
+
+    def test_ev_missing_soh_generates_scenarios(self):
+        out = calculate_soh_scenarios(18000, 320000, True, None, "Nissan", "Leaf", 2018)
+        assert out["applicable"] is True
+        assert out["soh_missing"] is True
+        assert out["scenarios"]
+        assert out["min_profitable_soh"] is not None
+        assert isinstance(out["recommendation"], str)
+
+
+class TestAuditNaming:
+    def test_record_contains_consistent_price_naming(self, sample_listing, params):
+        comp_result = {"tier": 1, "n_comps": 10, "comp_ids": [], "median_price": 380000, "transaction_median": 360000}
+        fmv_raw = {"raw_p10": 340000, "raw_p50": 390000, "raw_p90": 440000}
+        fmv_adjusted = {"adjusted_p10": 335000, "adjusted_p50": 385000, "adjusted_p90": 445000, "adjustments": []}
+        rep = {"lag1_issues": [], "lag2_issues": [], "correlation_factor": 1.0, "uncertainty_multiplier": 1.0, "total_p50": 5000, "total_p90": 9000}
+        days = {"p50": 25, "p90": 55, "bull": 15}
+        profit_result = calculate_profit(sample_listing, fmv_adjusted, {"total_p50": 5000, "total_p90": 9000}, days, params)
+        mpp_data = calculate_mpp(fmv_adjusted, {"total_p50": 5000, "total_p90": 9000}, {"p50": 25, "p90": 55}, params)
+        classification = classify_deal({"scenarios": {"80pct_loan": {"profit_base": 10000, "profit_bear": 1000}}}, {"tier": 1, "n_comps": 10, "flags": []}, {"dq_score": 0.9}, params)
+        record = build_audit_record(sample_listing, comp_result, fmv_raw, fmv_adjusted, rep, days, profit_result, mpp_data, classification)
+        assert "listing_price_nok" in record
+        assert "assumed_entry_price" in record
+        assert "required_discount_to_mpp" in record
+

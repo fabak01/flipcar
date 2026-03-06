@@ -1,6 +1,5 @@
 """Profit calculation across bull/base/bear scenarios and LTV levels."""
 
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -8,15 +7,68 @@ import yaml
 
 from .carry import calculate_carry
 
-logger = logging.getLogger(__name__)
-
 CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
 
 
 def _load_params() -> dict[str, Any]:
-    """Load profit parameters."""
     with open(CONFIG_DIR / "params.yaml") as f:
         return yaml.safe_load(f)
+
+
+def estimate_entry_price(listing: dict[str, Any], pristips: dict | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Estimate entry price with listing-age/price-cut/market modifiers."""
+    listing_price = listing.get("price_nok", 0)
+    profit_params = params.get("profit", {})
+
+    base_discount = profit_params.get("base_negotiation_discount", 0.03)
+
+    age_days = listing.get("listing_age_days", 0)
+    if age_days > 60:
+        age_bonus = 0.05
+    elif age_days > 30:
+        age_bonus = 0.03
+    elif age_days > 14:
+        age_bonus = 0.01
+    else:
+        age_bonus = 0.0
+
+    n_cuts = listing.get("n_price_cuts", 0)
+    cut_bonus = min(n_cuts * 0.02, 0.06)
+
+    if pristips and pristips.get("market_anchor_price"):
+        price_vs_market = listing_price / max(pristips["market_anchor_price"], 1)
+        if price_vs_market > 1.10:
+            market_bonus = 0.04
+        elif price_vs_market > 1.05:
+            market_bonus = 0.02
+        elif price_vs_market < 0.95:
+            market_bonus = -0.02
+        else:
+            market_bonus = 0.0
+    else:
+        market_bonus = 0.0
+
+    seller_mod = -0.02 if listing.get("seller_type") == "forhandler" else 0.0
+
+    total_discount = max(base_discount + age_bonus + cut_bonus + market_bonus + seller_mod, 0.01)
+    total_discount = min(total_discount, 0.20)
+
+    assumed_entry = round(listing_price * (1 - total_discount))
+
+    return {
+        "listing_price": listing_price,
+        "listing_price_nok": listing_price,
+        "assumed_entry_price": assumed_entry,
+        "total_discount": round(total_discount, 3),
+        "assumed_negotiation_discount": round(total_discount, 3),
+        "discount_breakdown": {
+            "base": base_discount,
+            "listing_age": age_bonus,
+            "price_cuts": cut_bonus,
+            "market_position": market_bonus,
+            "seller_type": seller_mod,
+        },
+    }
 
 
 def calculate_profit(
@@ -25,66 +77,42 @@ def calculate_profit(
     rep: dict[str, Any],
     days: dict[str, Any],
     params: dict[str, Any] | None = None,
+    pristips: dict | None = None,
 ) -> dict[str, Any]:
-    """Calculate profit across all scenarios and LTV levels.
-
-    Args:
-        listing: Normalized listing dict.
-        fmv_adjusted: Dict with adjusted_p10/p50/p90.
-        rep: Dict with total_p50/total_p90.
-        days: Dict with p50/p90/bull days estimates.
-        params: Optional params override.
-
-    Returns:
-        Dict with scenarios per LTV, entry/exit prices, and fees.
-    """
+    """Calculate profit across scenarios and LTV levels."""
     if params is None:
         params = _load_params()
 
     profit_params = params["profit"]
 
-    # Entry
-    listing_price = listing.get("price_nok", 0)
-    negotiation_discount = profit_params["negotiation_discount"]
-    purchase_price = listing_price * (1 - negotiation_discount)
+    entry = estimate_entry_price(listing, pristips, params)
+    listing_price_nok = entry["listing_price_nok"]
+    assumed_entry_price = entry["assumed_entry_price"]
 
-    # Exit prices
-    exit_base = (
-        fmv_adjusted["adjusted_p50"] * (1 - profit_params["sales_friction_base"])
-        - profit_params["sales_fixed_costs"]
-    )
-    exit_bear = (
-        fmv_adjusted["adjusted_p10"] * (1 - profit_params["sales_friction_bear"])
-        - profit_params["sales_fixed_costs"]
-    )
-    exit_bull = (
-        fmv_adjusted["adjusted_p90"] * (1 - profit_params["sales_friction_bull"])
-        - profit_params["sales_fixed_costs"]
-    )
+    exit_base = fmv_adjusted["adjusted_p50"] * (1 - profit_params["sales_friction_base"]) - profit_params["sales_fixed_costs"]
+    exit_bear = fmv_adjusted["adjusted_p10"] * (1 - profit_params["sales_friction_bear"]) - profit_params["sales_fixed_costs"]
+    exit_bull = fmv_adjusted["adjusted_p90"] * (1 - profit_params["sales_friction_bull"]) - profit_params["sales_fixed_costs"]
 
-    # Fees
     days_p50 = days["p50"]
     omregistrering = profit_params["omregistrering"]
     forsikring = (days_p50 / 30) * profit_params["forsikring_per_month"]
     finn_annonse = profit_params["finn_salgsannonse"]
     total_fees = omregistrering + forsikring + finn_annonse
 
-    # Rep costs
     rep_p50 = rep["total_p50"]
     rep_p90 = rep["total_p90"]
 
-    # Calculate for each LTV
     ltv_scenarios = {"cash": 0.0, "60pct_loan": 0.6, "80pct_loan": 0.8}
     scenarios: dict[str, dict[str, Any]] = {}
 
     for label, ltv in ltv_scenarios.items():
-        carry_base = calculate_carry(purchase_price, days_p50, ltv, params)
-        carry_bear = calculate_carry(purchase_price, days["p90"], ltv, params)
-        carry_bull = calculate_carry(purchase_price, days["bull"], ltv, params)
+        carry_base = calculate_carry(assumed_entry_price, days_p50, ltv, params)
+        carry_bear = calculate_carry(assumed_entry_price, days["p90"], ltv, params)
+        carry_bull = calculate_carry(assumed_entry_price, days["bull"], ltv, params)
 
-        profit_base = exit_base - purchase_price - rep_p50 - carry_base["total_carry"] - total_fees
-        profit_bear = exit_bear - purchase_price - rep_p90 - carry_bear["total_carry"] - total_fees
-        profit_bull = exit_bull - purchase_price - rep_p50 * 0.5 - carry_bull["total_carry"] - total_fees
+        profit_base = exit_base - assumed_entry_price - rep_p50 - carry_base["total_carry"] - total_fees
+        profit_bear = exit_bear - assumed_entry_price - rep_p90 - carry_bear["total_carry"] - total_fees
+        profit_bull = exit_bull - assumed_entry_price - rep_p50 * 0.5 - carry_bull["total_carry"] - total_fees
 
         equity = carry_base["equity_required"]
         roe_base = (profit_base / equity) * (365 / days_p50) if equity > 0 and days_p50 > 0 else None
@@ -102,8 +130,11 @@ def calculate_profit(
         }
 
     return {
-        "listing_price": listing_price,
-        "purchase_price": round(purchase_price),
+        "listing_price_nok": listing_price_nok,
+        "listing_price": listing_price_nok,
+        "assumed_negotiation_discount": entry["total_discount"],
+        "assumed_entry_price": assumed_entry_price,
+        "entry_discount_breakdown": entry["discount_breakdown"],
         "exit_base": round(exit_base),
         "exit_bear": round(exit_bear),
         "exit_bull": round(exit_bull),

@@ -276,12 +276,14 @@ def _get_next_page_url(soup: BeautifulSoup, current_url: str) -> Optional[str]:
     if next_link and next_link.get("href"):
         href = next_link["href"]
         return href if href.startswith("http") else f"https://www.finn.no{href}"
-    # Try page parameter
+
+    # Fallback: increment page parameter if present
     page_match = re.search(r'[?&]page=(\d+)', current_url)
-    current_page = int(page_match.group(1)) if page_match else 1
-    if "&page=" in current_url:
-        return re.sub(r'page=\d+', f'page={current_page + 1}', current_url)
-    return f"{current_url}&page={current_page + 1}"
+    if not page_match:
+        return None
+
+    current_page = int(page_match.group(1))
+    return re.sub(r'([?&]page=)\d+', '\\g<1>' + str(current_page + 1), current_url)
 
 
 def scrape_model(
@@ -315,6 +317,8 @@ def scrape_model(
     seen_ids: set[str] = set()
     url = base_url
     max_pages = params.get("max_pages_per_model", 20)
+
+    stop_reason = "max_pages_reached"
 
     for page_num in range(1, max_pages + 1):
         logger.info("Scraping %s %s page %d: %s", make, model, page_num, url)
@@ -353,7 +357,8 @@ def scrape_model(
                 logger.info("Found %d listings via HTML parsing", len(raw_listings))
 
         if not raw_listings:
-            logger.warning("No listings found on page %d for %s %s", page_num, make, model)
+            stop_reason = "empty_page"
+            logger.info("Stopping pagination for %s %s on page %d: %s", make, model, page_num, stop_reason)
             break
 
         new_on_page = 0
@@ -370,7 +375,8 @@ def scrape_model(
                 new_on_page += 1
 
         if new_on_page == 0:
-            logger.info("No new listings on page %d, stopping pagination", page_num)
+            stop_reason = "no_new_listings"
+            logger.info("Stopping pagination for %s %s on page %d: %s", make, model, page_num, stop_reason)
             break
 
         # Rate limiting
@@ -381,10 +387,14 @@ def scrape_model(
         # Next page
         next_url = _get_next_page_url(soup, url)
         if not next_url or next_url == url:
+            stop_reason = "no_next_page"
+            logger.info("Stopping pagination for %s %s on page %d: %s", make, model, page_num, stop_reason)
             break
         url = next_url
+    else:
+        logger.info("Stopping pagination for %s %s: %s (%d pages)", make, model, stop_reason, max_pages)
 
-    logger.info("Total %d listings scraped for %s %s", len(all_listings), make, model)
+    logger.info("Total %d listings scraped for %s %s (stop_reason=%s)", len(all_listings), make, model, stop_reason)
     return all_listings
 
 
