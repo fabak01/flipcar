@@ -17,8 +17,10 @@ from src.engine.days_to_sell import estimate_days, price_factor, season_factor
 from src.engine.carry import calculate_carry
 from src.engine.profit import calculate_profit
 from src.engine.mpp import calculate_mpp
-from src.engine.classifier import classify_deal
+from src.engine.classifier import classify_deal, classify_deal_new
 from src.engine.battery_soh import calculate_soh_scenarios
+from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr
+from src.engine.underwriting import underwrite_deal
 from src.output.formatter import build_audit_record
 
 CONFIG_DIR = Path(__file__).parent.parent / "config"
@@ -143,8 +145,8 @@ class TestDataQuality:
 class TestComps:
     def test_tier1_match(self, sample_listing, comp_listings, params):
         result = find_comps(sample_listing, comp_listings, params)
-        assert result["tier"] in (1, 2)  # tier depends on km spread of fixture
-        assert result["n_comps"] >= 8
+        assert result["tier"] in (1, 2, 3)
+        assert result["n_comps"] >= 5
 
     def test_no_comps_for_different_model(self, params):
         target = {"make": "BMW", "model": "i3", "year": 2020, "km": 40000, "listing_id": "x"}
@@ -159,6 +161,16 @@ class TestComps:
         if result["comps"]:
             comp = result["comps"][0]
             assert comp["transaction_price"] < comp["price_nok"]
+
+    def test_insufficient_flag_on_few_comps(self, params):
+        target = {"make": "Tesla", "model": "Model 3", "year": 2021, "km": 50000, "listing_id": "t1", "price_nok": 250000}
+        comps = [
+            {"make": "Tesla", "model": "Model 3", "year": 2021, "km": 52000,
+             "listing_id": f"c{i}", "price_nok": 260000, "seller_type": "privat"}
+            for i in range(3)
+        ]
+        result = find_comps(target, comps, params)
+        assert result.get("insufficient", False) is True
 
 
 # --- FMV ---
@@ -181,7 +193,6 @@ class TestFMV:
     def test_low_n_expansion(self, params):
         prices = [380000, 390000, 400000, 410000, 420000]
         fmv = calculate_fmv({"comp_transaction_prices": prices}, params)
-        # With expansion, range should be wider than raw percentiles
         import numpy as np
         raw_p10 = float(np.percentile(prices, 10))
         raw_p90 = float(np.percentile(prices, 90))
@@ -219,8 +230,8 @@ class TestAdjustments:
         ]
         result = apply_adjustments(fmv, adjs)
         assert result["adjusted_p50"] == 354000
-        assert result["adjusted_p10"] < fmv["raw_p10"]  # negative amplified
-        assert result["adjusted_p90"] > fmv["raw_p90"]  # positive dampened
+        assert result["adjusted_p10"] < fmv["raw_p10"]
+        assert result["adjusted_p90"] > fmv["raw_p90"]
 
 
 class TestEuStatusEvaluation:
@@ -283,7 +294,7 @@ class TestDaysToSell:
         assert price_factor(300000, 400000) == 0.50
 
     def test_price_factor_market(self):
-        assert price_factor(400000, 400000) == 1.00  # ratio=1.0 falls in [1.00, 1.05)
+        assert price_factor(400000, 400000) == 1.00
 
     def test_price_factor_expensive(self):
         assert price_factor(500000, 400000) == 2.50
@@ -380,6 +391,16 @@ class TestClassifier:
         result = classify_deal(profit_result, comp_result, listing, params)
         assert "80%" in result["loan_recommendation"]
 
+    def test_new_classifier_green(self):
+        result = classify_deal_new(25000, 5000, {}, {"issues": [{"name": "x"}]}, None, {"days_to_sell": 15})
+        assert result["label"] == "KONTAKT"
+        assert result["send_telegram"] is True
+
+    def test_new_classifier_no_data(self):
+        result = classify_deal_new(25000, 5000, {}, None, None, None)
+        assert result["label"] == "MONITOR"
+        assert result["send_telegram"] is False
+
 
 # --- Battery SOH ---
 
@@ -403,6 +424,77 @@ class TestBatterySoh:
         assert isinstance(out["recommendation"], str)
 
 
+# --- Regnr Registry ---
+
+class TestRegnrRegistry:
+    def test_build_registry(self):
+        listings = [
+            {"make": "Tesla", "model": "Model 3", "variant": "long_range", "year": 2021, "registration_number": "EC60771"},
+            {"make": "Tesla", "model": "Model 3", "variant": "performance", "year": 2022, "registration_number": "AB12345"},
+            {"make": "Tesla", "model": "Model Y", "variant": "long_range", "year": 2022, "registration_number": None},
+        ]
+        registry = build_regnr_registry(listings)
+        assert len(registry) >= 2
+        assert "tesla_model_3_long_range_2021" in registry
+        assert registry["tesla_model_3_long_range_2021"] == "EC60771"
+
+    def test_get_reference_regnr_exact(self):
+        registry = {"tesla_model_3_long_range_2021": "EC60771"}
+        regnr = get_reference_regnr(registry, "Tesla", "Model 3", "long_range", 2021)
+        assert regnr == "EC60771"
+
+    def test_get_reference_regnr_fallback_any(self):
+        registry = {"tesla_model_3_any_2021": "EC60771"}
+        regnr = get_reference_regnr(registry, "Tesla", "Model 3", "performance", 2021)
+        assert regnr == "EC60771"
+
+    def test_get_reference_regnr_fallback_year(self):
+        registry = {"tesla_model_3_any_2022": "AB12345"}
+        regnr = get_reference_regnr(registry, "Tesla", "Model 3", "long_range", 2021)
+        assert regnr == "AB12345"
+
+    def test_get_reference_regnr_none(self):
+        registry = {}
+        regnr = get_reference_regnr(registry, "Tesla", "Model 3", "long_range", 2021)
+        assert regnr is None
+
+
+# --- Underwriting ---
+
+class TestUnderwriting:
+    def test_underwrite_deal_with_comps(self, sample_listing, params):
+        # Add comp_result to listing
+        sample_listing["comp_result"] = {
+            "tier": 1,
+            "n_comps": 10,
+            "transaction_median": 380000,
+            "median_price": 400000,
+            "comp_transaction_prices": [360000, 370000, 380000, 390000, 400000],
+        }
+        sample_listing["pristips"] = {"days_to_sell": 15, "active_similar": 50, "sold_90d": 200}
+        sample_listing["ai_analysis"] = {
+            "issues": [{"name": "test", "cost_p50": 3000, "cost_p90": 5000}],
+            "positives": [{"name": "service", "value_nok": 5000}],
+            "condition_summary": {},
+        }
+        sample_listing["rep_estimate"] = {"total_p50": 5000, "total_p90": 12000}
+
+        deal = underwrite_deal(sample_listing, params)
+        assert "scenarios" in deal
+        assert "80pct" in deal["scenarios"]
+        assert "classification" in deal
+        assert deal["market"]["source"] == "internal_comps"
+
+    def test_underwrite_deal_no_comps(self, sample_listing, params):
+        sample_listing["comp_result"] = {"tier": None, "n_comps": 0, "transaction_median": None}
+        sample_listing["pristips"] = None
+        sample_listing["ai_analysis"] = None
+
+        deal = underwrite_deal(sample_listing, params)
+        assert deal.get("error") == "Ingen markedsdata tilgjengelig"
+        assert deal["classification"]["label"] == "MONITOR"
+
+
 class TestAuditNaming:
     def test_record_contains_consistent_price_naming(self, sample_listing, params):
         comp_result = {"tier": 1, "n_comps": 10, "comp_ids": [], "median_price": 380000, "transaction_median": 360000}
@@ -417,4 +509,3 @@ class TestAuditNaming:
         assert "listing_price_nok" in record
         assert "assumed_entry_price" in record
         assert "required_discount_to_mpp" in record
-

@@ -17,6 +17,52 @@ def _load_params() -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def classify_deal_new(
+    profit_base: float,
+    profit_bear: float,
+    listing: dict[str, Any],
+    ai: dict | None,
+    soh: dict | None,
+    pristips: dict | None,
+) -> dict[str, Any]:
+    """Classify a deal based on profit scenarios. New simplified interface."""
+
+    # No market data AND no AI = can't evaluate
+    has_ai = ai and (ai.get("issues") or ai.get("positives"))
+    if not pristips and not has_ai:
+        return {
+            "emoji": "⚪",
+            "label": "MONITOR",
+            "send_telegram": False,
+            "reason": "Mangler markedsdata og AI-analyse",
+            "loan_rec": "Ikke bruk laan",
+        }
+
+    # Normal classification
+    if profit_base > 15000 and profit_bear > -5000:
+        cls = {"emoji": "🟢", "label": "KONTAKT", "send_telegram": True}
+    elif profit_base > 10000 and profit_bear > -15000:
+        cls = {"emoji": "🟡", "label": "KONTAKT (forsiktig)", "send_telegram": True}
+    elif profit_base > 5000 and profit_bear > -25000:
+        cls = {"emoji": "🟠", "label": "MANUELL VURDERING", "send_telegram": False}
+    elif profit_bear < -30000:
+        cls = {"emoji": "🚫", "label": "HARD PASS", "send_telegram": False}
+    else:
+        cls = {"emoji": "🔴", "label": "PASS", "send_telegram": False}
+
+    # Loan recommendation
+    if profit_bear > 10000:
+        cls["loan_rec"] = "Hoey laan OK (80%)"
+    elif profit_bear > 0:
+        cls["loan_rec"] = "Moderat laan (60%)"
+    elif profit_bear > -10000:
+        cls["loan_rec"] = "Lav laan eller cash"
+    else:
+        cls["loan_rec"] = "Ikke bruk laan"
+
+    return cls
+
+
 def classify_deal(
     profit_result: dict[str, Any],
     comp_result: dict[str, Any],
@@ -24,19 +70,7 @@ def classify_deal(
     params: dict[str, Any] | None = None,
     soh_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Classify a deal based on profit scenarios.
-
-    Uses the 80% loan scenario by default. Biased towards showing deals.
-
-    Args:
-        profit_result: Output from profit.calculate_profit().
-        comp_result: Output from comps.find_comps().
-        listing: Normalized listing dict.
-        params: Optional params override.
-
-    Returns:
-        Dict with classification, flags, and loan_recommendation.
-    """
+    """Legacy classifier interface for backward compatibility."""
     if params is None:
         params = _load_params()
 

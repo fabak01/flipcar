@@ -17,16 +17,7 @@ def _get_credentials() -> tuple[str, str]:
 
 
 def send_message(text: str, token: str = "", chat_id: str = "") -> bool:
-    """Send a message via Telegram Bot API.
-
-    Args:
-        text: Message text (supports Telegram MarkdownV2 or plain text).
-        token: Bot token override (uses env var if empty).
-        chat_id: Chat ID override (uses env var if empty).
-
-    Returns:
-        True if message was sent successfully.
-    """
+    """Send a message via Telegram Bot API."""
     if not token or not chat_id:
         token, chat_id = _get_credentials()
     if not token or not chat_id:
@@ -50,15 +41,130 @@ def send_message(text: str, token: str = "", chat_id: str = "") -> bool:
         return False
 
 
+def fmt(n: Any) -> str:
+    """Format numbers with thousand separators."""
+    if n is None:
+        return "N/A"
+    return f"{int(round(n)):,}".replace(",", " ")
+
+
+def format_deal_message(deal: dict[str, Any]) -> str:
+    """Format a deal from underwrite_deal() into a Telegram alert message."""
+    c = deal.get("classification", {})
+    l = deal.get("listing", {})
+    m = deal.get("market", {})
+    s = deal.get("scenarios", {})
+
+    # Header
+    emoji = c.get("emoji", "")
+    label = c.get("label", "")
+    msg = f"<b>{emoji} {label}</b>\n\n"
+    msg += f"<b>{l.get('make', '')} {l.get('model', '')} {l.get('variant', '')} {l.get('year', '')}</b> | {fmt(l.get('km'))} km\n"
+    msg += f"{l.get('location_city', 'Ukjent')}\n"
+    msg += f"Annonsepris: <b>{fmt(l.get('price_nok'))} kr</b>\n\n"
+
+    # Market
+    msg += "-- MARKED --\n"
+    if m.get("anchor"):
+        msg += f"Comps FMV: <b>{fmt(m['anchor'])} kr</b>\n"
+        if m.get("low") and m.get("high"):
+            msg += f"Intervall: {fmt(m['low'])} - {fmt(m['high'])} kr\n"
+        regnr_note = " (ref.regnr)" if l.get("regnr_source") == "reference" else ""
+        msg += f"Kilde: {m.get('source', 'comps')}{regnr_note}\n"
+    else:
+        msg += "Markedsdata: Utilgjengelig\n"
+
+    if m.get("days_to_sell"):
+        msg += f"Salgstid: ca. {m['days_to_sell']} dager\n"
+    if m.get("active_similar"):
+        msg += f"Aktive lignende: {m['active_similar']}"
+        if m.get("sold_90d"):
+            msg += f" | Solgt 90d: {m['sold_90d']}"
+        msg += "\n"
+
+    # Underwriting
+    msg += "\n-- UNDERWRITING --\n"
+    ai = deal.get("ai_analysis") or {}
+    n_pos = len(ai.get("positives", []))
+    n_iss = len(ai.get("issues", []))
+
+    if n_pos > 0:
+        pos_names = ", ".join(p.get("name", "") for p in ai["positives"][:3])
+        msg += f"Positive ({n_pos}): {pos_names}\n"
+    if n_iss > 0:
+        iss_names = ", ".join(i.get("name", "") for i in ai["issues"][:3])
+        msg += f"Issues ({n_iss}): {iss_names}\n"
+
+    exit_data = deal.get("exit", {})
+    msg += f"Exit base: {fmt(exit_data.get('base'))} kr\n"
+    msg += f"Exit bear: {fmt(exit_data.get('bear'))} kr\n"
+
+    # Profit (all scenarios)
+    msg += "\n-- PROFITT --\n"
+    msg += "<pre>"
+    msg += f"{'':12} {'Cash':>10} {'60% laan':>10} {'80% laan':>10}\n"
+
+    for row_label, key in [("Bull:", "profit_bull"), ("Base:", "profit_base"), ("Bear:", "profit_bear")]:
+        cash_val = fmt(s.get("cash", {}).get(key))
+        s60_val = fmt(s.get("60pct", {}).get(key))
+        s80_val = fmt(s.get("80pct", {}).get(key))
+        msg += f"{row_label:12} {cash_val:>10} {s60_val:>10} {s80_val:>10}\n"
+
+    cash_roe = s.get("cash", {}).get("roe_base_annual", "N/A")
+    s60_roe = s.get("60pct", {}).get("roe_base_annual", "N/A")
+    s80_roe = s.get("80pct", {}).get("roe_base_annual", "N/A")
+    msg += f"{'ROE ann:':12} {str(cash_roe) + '%':>10} {str(s60_roe) + '%':>10} {str(s80_roe) + '%':>10}\n"
+    msg += "</pre>\n"
+
+    # MPP
+    msg += f"\nMPP: <b>{fmt(deal.get('mpp'))} kr</b>"
+    rd = deal.get("required_discount", 0)
+    if rd and rd > 0:
+        msg += f" (trenger {rd:.1%} rabatt)"
+    msg += "\n"
+
+    # Entry
+    e = deal.get("entry", {})
+    msg += f"Antatt entry: {fmt(e.get('assumed_entry_price'))} kr ({e.get('total_discount', 0):.0%} rabatt)\n"
+    msg += f"Laan-anbefaling: {c.get('loan_rec', 'N/A')}\n"
+
+    # SOH (only EVs with missing SOH)
+    soh = deal.get("soh") or {}
+    if soh.get("applicable") and soh.get("soh_missing"):
+        msg += f"\nSOH IKKE OPPGITT\n"
+        if soh.get("min_profitable_soh"):
+            msg += f"Loennsom hvis SOH >= {soh['min_profitable_soh']}%\n"
+        if soh.get("expected_soh"):
+            msg += f"Forventet for denne aargangen: ~{soh['expected_soh']}%\n"
+        msg += f"Spoer selger om SOH/batteritest\n"
+
+    # Diligence
+    diligence = ai.get("diligence_items", [])
+    if diligence:
+        msg += "\n<b>SJEKK FOER KJOEP:</b>\n"
+        for d in diligence[:5]:
+            q = d.get("question", "")
+            if q:
+                msg += f"- {q}\n"
+
+    # Link
+    msg += f"\n<a href=\"{l.get('listing_url', '#')}\">Se annonse</a>"
+
+    return msg
+
+
+def send_deal_alert_new(deal: dict[str, Any]) -> bool:
+    """Send a deal alert using the new underwriting format."""
+    c = deal.get("classification", {})
+    if c.get("send_telegram", False):
+        msg = format_deal_message(deal)
+        return send_message(msg)
+    return True
+
+
+# Legacy interface for backward compatibility
 def format_deal_alert(analysis: dict[str, Any]) -> str:
-    """Format a deal analysis into a Telegram alert message.
-
-    Args:
-        analysis: Full analysis dict from the pipeline.
-
-    Returns:
-        Formatted message string.
-    """
+    """Format a deal analysis into a Telegram alert (legacy format)."""
     clf = analysis.get("classification", "")
     make = analysis.get("make", "")
     model = analysis.get("model", "")
@@ -73,19 +179,8 @@ def format_deal_alert(analysis: dict[str, Any]) -> str:
     comps = analysis.get("comps", {})
     mpp_data = analysis.get("mpp_data", {})
     days = analysis.get("days", {})
-    flags = analysis.get("flags", [])
 
     scenario_80 = analysis.get("scenarios", {}).get("80pct_loan", {})
-    pristips = analysis.get("pristips") or {}
-    underwriting = analysis.get("underwriting") or {}
-    ai_analysis = analysis.get("ai_analysis") or {}
-
-    mpp_val = mpp_data.get("mpp", 0)
-    required_discount_to_mpp = analysis.get("required_discount_to_mpp")
-    required_discount_to_assumed_entry = analysis.get("required_discount_to_assumed_entry")
-    required_discount_txt = f"{required_discount_to_mpp:.1%}" if isinstance(required_discount_to_mpp, (int, float)) else "N/A"
-    assumed_entry_txt = f"{required_discount_to_assumed_entry:.1%}" if isinstance(required_discount_to_assumed_entry, (int, float)) else "N/A"
-    soh_analysis = analysis.get("soh_analysis", {"applicable": False})
 
     lines = [
         f"<b>{clf}</b>",
@@ -94,75 +189,25 @@ def format_deal_alert(analysis: dict[str, Any]) -> str:
         f"Lokasjon: {location}",
         f"Pris: {listing_price_nok:,} kr",
         "",
-        "── MARKED ──",
-        f"FINN Pristips: {pristips.get('market_anchor_price', 'N/A')} kr",
-        f"Intervall: {pristips.get('market_anchor_low', 'N/A')} – {pristips.get('market_anchor_high', 'N/A')} kr",
-        f"Forventet salgstid: {pristips.get('market_days_to_sell', days.get('p50', 'N/A'))} dager",
-        f"Aktive lignende: {pristips.get('market_active_similar', 'N/A')}",
-        f"Solgt siste 90d: {pristips.get('market_sold_90d', 'N/A')}",
-        "",
-        "── UNDERWRITING ──",
-        f"Positive: {len(ai_analysis.get('positives', []))} funn",
-        f"Issues: {len(ai_analysis.get('issues', []))} funn",
-        f"Exit base: {underwriting.get('underwritten_exit_base', fmv.get('adjusted_p50', 0)):,} kr",
-        f"Exit bear: {underwriting.get('underwritten_exit_bear', fmv.get('adjusted_p10', 0)):,} kr",
-        "",
-        "",
-        f"FMV adjusted: {fmv.get('adjusted_p50', 0):,} kr ({comps.get('n_comps', 0)} comps, Tier {comps.get('tier', '?')})",
-        f"MPP: {mpp_val:,} kr (trenger {required_discount_txt} rabatt)",
-        f"Antatt entry-rabatt: {assumed_entry_txt}",
+        f"FMV: {fmv.get('adjusted_p50', 0):,} kr ({comps.get('n_comps', 0)} comps, Tier {comps.get('tier', '?')})",
+        f"MPP: {mpp_data.get('mpp', 0):,} kr",
         "",
         "Profitt (80% laan):",
         f"  Bull: {scenario_80.get('profit_bull', 0):+,} kr",
         f"  Base: {scenario_80.get('profit_base', 0):+,} kr",
         f"  Bear: {scenario_80.get('profit_bear', 0):+,} kr",
         "",
-        f"ROE ann. base: {scenario_80.get('roe_base', 'N/A')}",
-        "",
         f"Days to sell: {days.get('p50', 0)} (bear: {days.get('p90', 0)})",
         f"Laan-anbefaling: {analysis.get('loan_recommendation', '')}",
+        "",
+        f'<a href="{url}">Se annonse</a>',
     ]
-
-
-    if soh_analysis.get("applicable") and soh_analysis.get("soh_missing"):
-        lines.extend([
-            "",
-            "⚡ SOH ikke oppgitt – spør selger",
-            f"Min lønnsom SOH: {soh_analysis.get('min_profitable_soh', 'ukjent')}%",
-            f"Forventet SOH (alder): {soh_analysis.get('expected_soh_range', 'ukjent')}",
-            f"Vurdering: {soh_analysis.get('recommendation', '')}",
-            f"Spørsmål: {soh_analysis.get('seller_question', '')}",
-        ])
-
-    if flags:
-        lines.append("")
-        for flag in flags:
-            lines.append(flag)
-
-    diligence = ai_analysis.get("diligence_items", [])
-    if diligence:
-        lines.append("")
-        lines.append("📋 SJEKK FØR KJØP:")
-        for item in diligence[:5]:
-            q = item.get("question")
-            if q:
-                lines.append(f"- {q}")
-
-    lines.append("")
-    lines.append(f'<a href="{url}">Se annonse</a>')
 
     return "\n".join(lines)
 
 
 def send_deal_alert(analysis: dict[str, Any]) -> bool:
-    """Send a deal alert if classification warrants it.
-
-    Args:
-        analysis: Full analysis dict from the pipeline.
-
-    Returns:
-        True if alert was sent (or not needed).
-    """
+    """Send a deal alert if classification warrants it (legacy)."""
     clf = analysis.get("classification", "")
     if "KONTAKT" in clf:
         msg = format_deal_alert(analysis)
@@ -171,12 +216,5 @@ def send_deal_alert(analysis: dict[str, Any]) -> bool:
 
 
 def send_health_alert(message: str) -> bool:
-    """Send a health monitoring alert.
-
-    Args:
-        message: Alert message text.
-
-    Returns:
-        True if sent successfully.
-    """
+    """Send a health monitoring alert."""
     return send_message(f"<b>HEALTH ALERT</b>\n\n{message}")

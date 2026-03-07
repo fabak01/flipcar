@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS price_history (
   observed_at TIMESTAMPTZ DEFAULT NOW(),
   price_nok INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS regnr_registry (
+  id SERIAL PRIMARY KEY,
+  make TEXT,
+  model TEXT,
+  variant TEXT,
+  year INTEGER,
+  registration_number TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(make, model, variant, year)
+);
 """
 
 
@@ -84,6 +95,42 @@ def _get_client() -> Optional[Any]:
     except Exception as e:
         logger.error("Failed to create Supabase client: %s", e)
         return None
+
+
+def clear_caches() -> bool:
+    """Delete all rows from pristips_cache and text_analysis_cache."""
+    client = _get_client()
+    if not client:
+        logger.warning("No Supabase client, skipping cache clear")
+        return False
+    try:
+        client.table("pristips_cache").delete().neq("id", 0).execute()
+        client.table("text_analysis_cache").delete().neq("id", 0).execute()
+        logger.info("Cleared pristips_cache and text_analysis_cache")
+        return True
+    except Exception as e:
+        logger.error("Failed to clear caches: %s", e)
+        return False
+
+
+def upsert_regnr_registry(make: str, model: str, variant: str, year: int, registration_number: str) -> bool:
+    """Upsert a reference registration number into the registry."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.table("regnr_registry").upsert({
+            "make": make,
+            "model": model,
+            "variant": variant,
+            "year": year,
+            "registration_number": registration_number,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="make,model,variant,year").execute()
+        return True
+    except Exception as e:
+        logger.error("Failed to upsert regnr_registry: %s", e)
+        return False
 
 
 def upsert_raw_listing(listing: dict[str, Any]) -> bool:

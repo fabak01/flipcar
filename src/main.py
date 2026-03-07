@@ -1,9 +1,9 @@
-"""Main orchestrator with two-level architecture (screening + deep underwriting)."""
+"""Main orchestrator: scrape -> Pristips -> AI -> comps -> underwrite -> alert."""
 
+import argparse
+import json
 import logging
-import re
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.db.supabase_client import (
+    clear_caches,
     get_cached_text_analysis,
     get_previous_run,
     log_scrape_run,
@@ -21,19 +22,14 @@ from src.db.supabase_client import (
     upsert_raw_listing,
     upsert_text_analysis_cache,
 )
-from src.engine.battery_soh import calculate_soh_sensitivity
-from src.engine.classifier import classify_deal
 from src.engine.comps import find_comps
-from src.engine.days_to_sell import estimate_days_to_sell
 from src.engine.pristips import get_pristips_cached
-from src.engine.mpp import calculate_mpp
-from src.engine.profit import calculate_profit
+from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr, save_registry
 from src.engine.rep_estimator import estimate_repairs
-from src.engine.screener import screen_listing
 from src.engine.text_analyzer import analyze_listing_text
-from src.engine.underwriting import calculate_underwritten_exit
-from src.output.formatter import build_audit_record, write_csv, write_jsonl
-from src.output.telegram_bot import send_deal_alert, send_health_alert
+from src.engine.underwriting import underwrite_deal
+from src.output.formatter import write_csv, write_jsonl
+from src.output.telegram_bot import format_deal_message, send_deal_alert_new, send_health_alert
 from src.scraper.finn_scraper import flatten_results, load_config, scrape_all_models, scrape_model
 
 CONFIG_DIR = PROJECT_ROOT / "config"
@@ -49,30 +45,6 @@ logger = logging.getLogger(__name__)
 def load_all_params() -> dict[str, Any]:
     with open(CONFIG_DIR / "params.yaml") as f:
         return yaml.safe_load(f)
-
-
-def _extract_reported_soh(listing: dict[str, Any], ai_analysis: dict[str, Any] | None = None) -> float | None:
-    if ai_analysis:
-        val = ai_analysis.get("condition_summary", {}).get("batteri_soh")
-        if isinstance(val, (int, float)):
-            return float(val)
-    text = f"{listing.get('title', '')} {listing.get('listing_text', '')}".lower()
-    m = re.search(r"(?:soh|battery\s*health|batterikapasitet)\s*[:=]?\s*(\d{2})(?:[.,](\d))?", text)
-    if not m:
-        return None
-    value = float(m.group(1))
-    if m.group(2):
-        value += float(f"0.{m.group(2)}")
-    return value if 40 <= value <= 100 else None
-
-
-def _fuel_is_ev_or_phev(listing: dict[str, Any], model_cfg: dict[str, Any] | None = None) -> bool:
-    fuel = str(listing.get("fuel_type", "")).lower()
-    if any(k in fuel for k in ["el", "elektr", "electric", "plugin", "plug-in", "phev"]):
-        return True
-    if model_cfg and model_cfg.get("fuel_type") in {"electric", "plugin_hybrid"}:
-        return True
-    return False
 
 
 def check_health(results: dict[str, list[dict[str, Any]]], params: dict[str, Any]) -> str:
@@ -102,13 +74,18 @@ def check_health(results: dict[str, list[dict[str, Any]]], params: dict[str, Any
     return status
 
 
-def run_daily(model_filter: str | None = None) -> None:
+def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_cache: bool = False) -> None:
     load_dotenv()
     params = load_all_params()
 
+    if do_clear_cache:
+        logger.info("Clearing all caches...")
+        clear_caches()
+
     logger.info("=== FlipCar Daily Run Start ===")
+
+    # 1. Scrape all listings
     config = load_config()
-    model_map = {f"{m['make']}_{m['model']}".lower().replace(' ', '_').replace('-', '').replace('.', ''): m for m in config["models"]}
 
     if model_filter:
         filter_lower = model_filter.lower()
@@ -117,96 +94,205 @@ def run_daily(model_filter: str | None = None) -> None:
             logger.error("No models matching filter '%s'", model_filter)
             return
         logger.info("Filtered to %d model(s): %s", len(filtered_models), [f"{m['make']} {m['model']}" for m in filtered_models])
-        results = {}
+        results: dict[str, list[dict[str, Any]]] = {}
         for m in filtered_models:
             key = f"{m['make']}_{m['model']}".lower().replace(' ', '_').replace('-', '').replace('.', '')
             listings = scrape_model(m["make"], m["model"], m.get("finn_query", f"{m['make']} {m['model']}"), config["params"], config.get("aliases", {}))
             results[key] = listings
     else:
         results = scrape_all_models(config)
-    all_listings = flatten_results(results)
 
+    all_listings = flatten_results(results)
+    logger.info("Scraped %d listings total", len(all_listings))
+
+    # 2. Save raw data
     for listing in all_listings:
         upsert_raw_listing(listing)
 
-    shortlist: list[dict[str, Any]] = []
+    # 3. Build reference regnr registry
+    registry = build_regnr_registry(all_listings)
+    save_registry(registry, all_listings)
+    logger.info("Registry: %d reference regnr", len(registry))
+
+    # 4. Fetch Pristips for all listings
+    pristips_count = 0
     for listing in all_listings:
-        screen = screen_listing(listing, all_listings, params)
-        listing["screening"] = screen
-        if screen["passes_screening"]:
-            shortlist.append(listing)
+        regnr = listing.get("registration_number")
 
-    logger.info("Screened %d listings -> %d shortlisted", len(all_listings), len(shortlist))
+        if not regnr:
+            regnr = get_reference_regnr(
+                registry, listing.get("make", ""), listing.get("model", ""),
+                listing.get("variant", "unknown"), listing.get("year", 0),
+            )
+            listing["regnr_source"] = "reference" if regnr else None
+        else:
+            listing["regnr_source"] = "listing"
 
-    audit_records: list[dict[str, Any]] = []
+        if regnr:
+            km = listing.get("km") or 0
+            if km > 0:
+                pristips = get_pristips_cached(regnr, int(km))
+                listing["pristips"] = pristips
+                if pristips:
+                    pristips_count += 1
+            else:
+                listing["pristips"] = None
+        else:
+            listing["pristips"] = None
+
+    logger.info("Pristips fetched for %d/%d listings", pristips_count, len(all_listings))
+
+    # 5. Price vs market (using comps median as proxy)
+    # Will be computed during underwriting
+
+    # 6. AI analysis for all listings with text
+    ai_count = 0
+    for listing in all_listings:
+        listing_id = listing.get("listing_id", "")
+        listing_text = listing.get("listing_text", "")
+
+        if len(listing_text) < 20:
+            listing["ai_analysis"] = None
+            continue
+
+        cached_ai = get_cached_text_analysis(listing_id)
+        if cached_ai:
+            listing["ai_analysis"] = cached_ai
+            ai_count += 1
+            continue
+
+        ai = analyze_listing_text(
+            listing_text,
+            listing.get("make", ""),
+            listing.get("model", ""),
+            int(listing.get("year") or 0),
+        )
+        listing["ai_analysis"] = ai
+        upsert_text_analysis_cache(listing_id, ai)
+        ai_count += 1
+
+    logger.info("AI analysis for %d/%d listings", ai_count, len(all_listings))
+
+    # 7. Comps for all listings
+    for listing in all_listings:
+        comp_result = find_comps(listing, all_listings, params)
+        listing["comp_result"] = comp_result
+
+    # 8. Rep estimate for all listings
+    for listing in all_listings:
+        rep = estimate_repairs(listing, params=params)
+        listing["rep_estimate"] = rep
+
+    # 9. Full underwriting
+    deals: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    for listing in shortlist:
+    for listing in all_listings:
+        comp_result = listing.get("comp_result", {})
+        # Skip if no comps data at all
+        if not comp_result.get("transaction_median"):
+            continue
+
         try:
-            regnr = listing.get("registration_number")
-            km = listing.get("km") or 0
-            pristips = get_pristips_cached(regnr, int(km)) if regnr and km else None
-
-            cached_ai = get_cached_text_analysis(listing.get("listing_id", ""))
-            if cached_ai:
-                ai = cached_ai
-            else:
-                ai = analyze_listing_text(listing.get("listing_text", ""), listing.get("make", ""), listing.get("model", ""), int(listing.get("year") or 0))
-                upsert_text_analysis_cache(listing.get("listing_id", ""), ai)
-
-            comp_result = find_comps(listing, all_listings, params)
-            underwriting = calculate_underwritten_exit(pristips, ai, comp_result, listing, params)
-
-            fmv_adjusted = {
-                "adjusted_p10": underwriting.get("underwritten_exit_bear", 0),
-                "adjusted_p50": underwriting.get("underwritten_exit_base", 0),
-                "adjusted_p90": underwriting.get("underwritten_exit_bull", 0),
-                "adjustments": [],
-            }
-            fmv_raw = {"raw_p10": fmv_adjusted["adjusted_p10"], "raw_p50": fmv_adjusted["adjusted_p50"], "raw_p90": fmv_adjusted["adjusted_p90"]}
-
-            rep = estimate_repairs(listing, params=params)
-            days_new = estimate_days_to_sell(listing, pristips, params)
-            days = {"p50": days_new["days_p50"], "p90": days_new["days_p90"], "bull": days_new["days_bull"], "source": days_new["source"]}
-            profit = calculate_profit(listing, fmv_adjusted, rep, days, params, pristips=pristips)
-
-            mpp_data = calculate_mpp(fmv_adjusted, rep, days, params)
-
-            base_profit = profit["scenarios"]["80pct_loan"]["profit_base"]
-            model_key = f"{listing.get('make','')}_{listing.get('model','')}".lower().replace(" ", "_").replace("-", "").replace(".", "")
-            model_cfg = model_map.get(model_key)
-            is_ev = _fuel_is_ev_or_phev(listing, model_cfg)
-            soh_reported = _extract_reported_soh(listing, ai)
-            soh = calculate_soh_sensitivity(base_profit, is_ev, soh_reported, listing.get("make", ""), listing.get("model", ""), int(listing.get("year") or 0))
-
-            classification = classify_deal(profit, comp_result, listing, params, soh_analysis=soh)
-
-            record = build_audit_record(listing, comp_result, fmv_raw, fmv_adjusted, rep, days, profit, mpp_data, classification, soh_analysis=soh)
-            record["screening"] = listing.get("screening", {})
-            record["pristips"] = pristips
-            record["ai_analysis"] = ai
-            record["underwriting"] = underwriting
-
-            audit_records.append(record)
-            upsert_analysis(record)
-
+            deal = underwrite_deal(listing, params)
+            deals.append(deal)
         except Exception as e:
             errors.append(f"{listing.get('listing_id')}: {e}")
+            logger.error("Underwriting failed for %s: %s", listing.get("listing_id"), e)
 
+    # 10. Sort by profit
+    deals.sort(key=lambda d: d.get("scenarios", {}).get("80pct", {}).get("profit_base", -999999), reverse=True)
+
+    logger.info("Underwritten %d deals (%d errors)", len(deals), len(errors))
+
+    # 11. Build audit records for output
+    audit_records = []
+    for deal in deals:
+        l = deal.get("listing", {})
+        s80 = deal.get("scenarios", {}).get("80pct", {})
+        record = {
+            "listing_id": l.get("listing_id"),
+            "listing_url": l.get("listing_url"),
+            "make": l.get("make"),
+            "model": l.get("model"),
+            "variant": l.get("variant"),
+            "year": l.get("year"),
+            "km": l.get("km"),
+            "listing_price_nok": l.get("price_nok"),
+            "price_nok": l.get("price_nok"),
+            "location": l.get("location_city"),
+            "dq_score": l.get("dq_score"),
+            "classification": deal.get("classification", {}).get("label", ""),
+            "loan_recommendation": deal.get("classification", {}).get("loan_rec", ""),
+            "comps": deal.get("comps", {}),
+            "fmv": {
+                "adjusted_p10": deal.get("exit", {}).get("bear"),
+                "adjusted_p50": deal.get("market", {}).get("anchor"),
+                "adjusted_p90": deal.get("exit", {}).get("bull"),
+            },
+            "exit": deal.get("exit", {}),
+            "entry": deal.get("entry", {}),
+            "rep": deal.get("rep", {}),
+            "days": deal.get("days", {}),
+            "fees": deal.get("fees"),
+            "scenarios": {
+                "cash": deal.get("scenarios", {}).get("cash", {}),
+                "60pct_loan": deal.get("scenarios", {}).get("60pct", {}),
+                "80pct_loan": deal.get("scenarios", {}).get("80pct", {}),
+            },
+            "assumed_entry_price": deal.get("entry", {}).get("assumed_entry_price"),
+            "assumed_negotiation_discount": deal.get("entry", {}).get("total_discount"),
+            "mpp": deal.get("mpp"),
+            "required_discount": deal.get("required_discount"),
+            "soh_analysis": deal.get("soh", {}),
+            "pristips": deal.get("market", {}),
+            "ai_analysis": deal.get("ai_analysis", {}),
+            "flags": [],
+        }
+        audit_records.append(record)
+        upsert_analysis(record)
+
+    # 12. Telegram alerts (skip in dry_run)
     alerts_sent = 0
-    for record in audit_records:
-        alert_data = {**record, "fmv": record.get("fmv", {}), "comps": record.get("comps", {}), "mpp_data": {"mpp": record.get("mpp", 0)}, "soh_analysis": record.get("soh_analysis", {})}
-        if send_deal_alert(alert_data) and "KONTAKT" in record.get("classification", ""):
-            alerts_sent += 1
+    if not dry_run:
+        for deal in deals:
+            if send_deal_alert_new(deal):
+                c = deal.get("classification", {})
+                if c.get("send_telegram"):
+                    alerts_sent += 1
+    else:
+        # Print deals that WOULD be sent
+        for deal in deals[:10]:
+            c = deal.get("classification", {})
+            l = deal.get("listing", {})
+            s80 = deal.get("scenarios", {}).get("80pct", {})
+            m = deal.get("market", {})
+            print(f"\n{'='*60}")
+            print(f"{c.get('emoji','')} {c.get('label','')} | {l.get('make','')} {l.get('model','')} {l.get('variant','')} {l.get('year','')}")
+            print(f"  Pris: {l.get('price_nok', 0):,} kr | FMV: {m.get('anchor', 0):,} kr")
+            print(f"  Comps: {deal.get('comps', {}).get('n_comps', 0)} (Tier {deal.get('comps', {}).get('tier', '?')})")
+            print(f"  Pristips days: {m.get('days_to_sell', 'N/A')} | Active: {m.get('active_similar', 'N/A')} | Sold 90d: {m.get('sold_90d', 'N/A')}")
+            print(f"  Exit base/bear/bull: {deal.get('exit', {}).get('base', 0):,} / {deal.get('exit', {}).get('bear', 0):,} / {deal.get('exit', {}).get('bull', 0):,}")
+            print(f"  Profit 80% base: {s80.get('profit_base', 0):+,} | bear: {s80.get('profit_bear', 0):+,}")
+            print(f"  MPP: {deal.get('mpp', 0):,} | Discount needed: {deal.get('required_discount', 0):.1%}")
+            print(f"  Laan: {c.get('loan_rec', 'N/A')}")
+            if c.get("send_telegram"):
+                print(f"  >>> VILLE SENDT TELEGRAM <<<")
+                print(format_deal_message(deal)[:500])
 
+    # 13. Output files
     write_jsonl(audit_records, str(PROJECT_ROOT / "deals.jsonl"))
     write_csv(audit_records, str(PROJECT_ROOT / "deals.csv"))
 
+    # 14. Health check
     health_status = check_health(results, params)
     per_model = {k: len(v) for k, v in results.items()}
     log_scrape_run(len(all_listings), per_model, errors, health_status)
 
-    logger.info("=== FlipCar Daily Run Complete === (%d scraped, %d shortlisted, %d analyzed, %d alerts)", len(all_listings), len(shortlist), len(audit_records), alerts_sent)
+    logger.info(
+        "=== FlipCar Daily Run Complete === (%d scraped, %d underwritten, %d alerts, %d errors)",
+        len(all_listings), len(deals), alerts_sent, len(errors),
+    )
 
 
 def run() -> None:
@@ -215,8 +301,9 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(description="FlipCar Deal Radar")
     parser.add_argument("--model", type=str, default=None, help="Filter to a single model (e.g. 'Tesla Model 3')")
+    parser.add_argument("--dry-run", action="store_true", help="Print deals to terminal, don't send Telegram")
+    parser.add_argument("--clear-cache", action="store_true", help="Clear all Supabase caches before running")
     args = parser.parse_args()
-    run_daily(model_filter=args.model)
+    run_daily(model_filter=args.model, dry_run=args.dry_run, do_clear_cache=args.clear_cache)
