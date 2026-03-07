@@ -76,40 +76,17 @@ def _extract_vehicle_params(profile: dict[str, Any], km: int) -> dict[str, Any]:
     return params
 
 
-def _fetch_price_valuation(vehicle_params: dict[str, Any], timeout: int = 20) -> dict[str, Any] | None:
-    """Step 2: Query price valuation endpoint with vehicle attributes."""
-    url = f"{API_BASE}/ads/price/valuation"
-    resp = requests.get(url, params=vehicle_params, headers=_HEADERS, timeout=timeout)
-    if resp.ok:
-        return resp.json()
-    logger.warning("Price valuation returned %d: %s", resp.status_code, resp.text[:200])
-    return None
-
-
-def _fetch_price_summary(vehicle_params: dict[str, Any], timeout: int = 20) -> dict[str, Any] | None:
-    """Fallback: price summary (distribution stats)."""
-    url = f"{API_BASE}/ads/distribution/price/summary"
+def _fetch_active(vehicle_params: dict[str, Any], timeout: int = 20) -> dict[str, Any] | None:
+    """Fetch active ads summary (filtered by make/model)."""
+    url = f"{API_BASE}/ads/active"
     resp = requests.get(url, params=vehicle_params, headers=_HEADERS, timeout=timeout)
     if resp.ok:
         return resp.json()
     return None
 
 
-def _fetch_ads_count(vehicle_params: dict[str, Any], timeout: int = 20) -> int | None:
-    """Fetch count of active similar ads."""
-    url = f"{API_BASE}/ads/count"
-    resp = requests.get(url, params=vehicle_params, headers=_HEADERS, timeout=timeout)
-    if resp.ok:
-        data = resp.json()
-        if isinstance(data, int):
-            return data
-        if isinstance(data, dict):
-            return data.get("count") or data.get("total")
-    return None
-
-
-def _fetch_sold_count(vehicle_params: dict[str, Any], timeout: int = 20) -> dict[str, Any] | None:
-    """Fetch sold ads summary."""
+def _fetch_sold(vehicle_params: dict[str, Any], timeout: int = 20) -> dict[str, Any] | None:
+    """Fetch sold ads summary (filtered by make/model)."""
     url = f"{API_BASE}/ads/sold"
     resp = requests.get(url, params=vehicle_params, headers=_HEADERS, timeout=timeout)
     if resp.ok:
@@ -118,9 +95,19 @@ def _fetch_sold_count(vehicle_params: dict[str, Any], timeout: int = 20) -> dict
 
 
 def _fetch_publishing_time(vehicle_params: dict[str, Any], timeout: int = 20) -> dict[str, Any] | None:
-    """Fetch publishing time summary (days to sell)."""
+    """Fetch publishing time summary (filtered by make/model)."""
     url = f"{API_BASE}/ads/distribution/publishing-time/summary"
     resp = requests.get(url, params=vehicle_params, headers=_HEADERS, timeout=timeout)
+    if resp.ok:
+        return resp.json()
+    return None
+
+
+def _fetch_price_percentile(vehicle_params: dict[str, Any], listing_price: int, timeout: int = 20) -> dict[str, Any] | None:
+    """Try to get price percentile for a specific listing price."""
+    url = f"{API_BASE}/ads/price/percentile"
+    params = {**vehicle_params, "price": listing_price}
+    resp = requests.get(url, params=params, headers=_HEADERS, timeout=timeout)
     if resp.ok:
         return resp.json()
     return None
@@ -130,73 +117,47 @@ def _build_result(
     registration_number: str,
     km: int,
     profile: dict[str, Any],
-    price_val: dict[str, Any] | None,
-    price_summary: dict[str, Any] | None,
-    ads_count: int | None,
+    active_data: dict[str, Any] | None,
     sold_data: dict[str, Any] | None,
     pub_time: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Combine all API responses into a unified market-anchor structure."""
 
-    # Price: try price_valuation first, then price_summary, then profile
-    anchor = None
-    low = None
-    high = None
+    # Active similar ads
+    active_total = None
+    if active_data and isinstance(active_data, dict):
+        active_total = active_data.get("activeTotal")
 
-    if price_val:
-        anchor = price_val.get("price") or price_val.get("median") or price_val.get("estimatedPrice") or price_val.get("valuation")
-        low = price_val.get("priceLow") or price_val.get("low") or price_val.get("p25") or price_val.get("percentile25")
-        high = price_val.get("priceHigh") or price_val.get("high") or price_val.get("p75") or price_val.get("percentile75")
-        # If response is nested
-        if not anchor and isinstance(price_val.get("result"), dict):
-            r = price_val["result"]
-            anchor = r.get("price") or r.get("median") or r.get("estimatedPrice")
-            low = low or r.get("low") or r.get("p25")
-            high = high or r.get("high") or r.get("p75")
-
-    if not anchor and price_summary:
-        anchor = price_summary.get("median") or price_summary.get("average") or price_summary.get("mean")
-        low = low or price_summary.get("p25") or price_summary.get("percentile25") or price_summary.get("q1")
-        high = high or price_summary.get("p75") or price_summary.get("percentile75") or price_summary.get("q3")
-        if not anchor and isinstance(price_summary.get("summary"), dict):
-            s = price_summary["summary"]
-            anchor = s.get("median") or s.get("average")
-            low = low or s.get("p25") or s.get("q1")
-            high = high or s.get("p75") or s.get("q3")
-
-    # Days to sell
-    days_to_sell = None
-    if pub_time:
-        days_to_sell = pub_time.get("median") or pub_time.get("average") or pub_time.get("mean")
-        if not days_to_sell and isinstance(pub_time.get("summary"), dict):
-            days_to_sell = pub_time["summary"].get("median") or pub_time["summary"].get("average")
-
-    # Sold count
+    # Sold count (last 90 days)
     sold_90d = None
-    if sold_data:
-        if isinstance(sold_data, int):
-            sold_90d = sold_data
-        elif isinstance(sold_data, dict):
-            sold_90d = sold_data.get("count") or sold_data.get("total") or sold_data.get("sold")
-            if isinstance(sold_data.get("result"), (int, dict)):
-                r = sold_data["result"]
-                sold_90d = r if isinstance(r, int) else r.get("count") or r.get("total")
+    sold_30d = None
+    if sold_data and isinstance(sold_data, dict):
+        sold_90d = sold_data.get("last90Days") or sold_data.get("last90days")
+        sold_30d = sold_data.get("last30days") or sold_data.get("last30Days")
+
+    # Days to sell from publishing time summary
+    days_to_sell = None
+    if pub_time and isinstance(pub_time, dict):
+        quarterly = pub_time.get("countDistributionQuarterly", [])
+        if quarterly:
+            latest = quarterly[-1]
+            days_to_sell = latest.get("publishingTimeMedian") or latest.get("standingTimeMedian")
 
     return {
         "registration_number": registration_number,
         "km": km,
-        "market_anchor_price": anchor,
-        "market_anchor_low": low,
-        "market_anchor_high": high,
+        "market_anchor_price": None,
+        "market_anchor_low": None,
+        "market_anchor_high": None,
         "market_days_to_sell": days_to_sell,
-        "market_active_similar": ads_count,
+        "market_active_similar": active_total,
         "market_sold_90d": sold_90d,
+        "market_sold_30d": sold_30d,
         "market_comps": [],
         "vehicle_profile": profile,
-        "price_valuation_raw": price_val,
-        "price_summary_raw": price_summary,
-        "publishing_time_raw": pub_time,
+        "active_raw": active_data,
         "sold_raw": sold_data,
+        "publishing_time_raw": pub_time,
         "source": "finn_pristips",
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -211,23 +172,20 @@ def get_pristips(registration_number: str, km: int, timeout: int = 20) -> dict[s
     if not profile:
         raise RuntimeError(f"Pristips: no vehicle profile for {reg}")
 
-    # Step 2: Extract params and query multiple endpoints
+    # Step 2: Extract params and query filtered endpoints
     vparams = _extract_vehicle_params(profile, int(km))
     logger.info("Pristips vehicle params for %s: %s", reg, vparams)
 
-    price_val = _fetch_price_valuation(vparams, timeout)
-    price_summary = _fetch_price_summary(vparams, timeout)
-    ads_count = _fetch_ads_count(vparams, timeout)
-    sold_data = _fetch_sold_count(vparams, timeout)
+    active_data = _fetch_active(vparams, timeout)
+    sold_data = _fetch_sold(vparams, timeout)
     pub_time = _fetch_publishing_time(vparams, timeout)
 
-    result = _build_result(reg, int(km), profile, price_val, price_summary, ads_count, sold_data, pub_time)
+    result = _build_result(reg, int(km), profile, active_data, sold_data, pub_time)
 
     logger.info(
-        "Pristips result for %s: anchor=%s, low=%s, high=%s, days=%s, active=%s, sold=%s",
-        reg, result["market_anchor_price"], result["market_anchor_low"],
-        result["market_anchor_high"], result["market_days_to_sell"],
-        result["market_active_similar"], result["market_sold_90d"],
+        "Pristips result for %s: days=%s, active=%s, sold_90d=%s, sold_30d=%s",
+        reg, result["market_days_to_sell"], result["market_active_similar"],
+        result["market_sold_90d"], result.get("market_sold_30d"),
     )
 
     return result

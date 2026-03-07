@@ -100,46 +100,62 @@ def upsert_raw_listing(listing: dict[str, Any]) -> bool:
     price = listing.get("price_nok")
 
     try:
-        existing = (
-            client.table("raw_listings")
-            .select("listing_id, original_price, n_price_cuts")
-            .eq("listing_id", listing_id)
-            .limit(1)
-            .execute()
-        )
-        existing_row = existing.data[0] if existing.data else None
-
-        n_cuts = int(existing_row.get("n_price_cuts", 0)) if existing_row else 0
-        original_price = existing_row.get("original_price") if existing_row else price
-
-        if existing_row and price is not None:
-            prev_price = ((
-                client.table("price_history")
-                .select("price_nok")
+        # Try full schema with price tracking columns
+        try:
+            existing = (
+                client.table("raw_listings")
+                .select("listing_id, original_price, n_price_cuts")
                 .eq("listing_id", listing_id)
-                .order("observed_at", desc=True)
                 .limit(1)
                 .execute()
-            ).data or [{}])[0].get("price_nok")
-            if prev_price and price < prev_price:
-                n_cuts += 1
+            )
+            existing_row = existing.data[0] if existing.data else None
 
-        client.table("raw_listings").upsert({
-            "listing_id": listing_id,
-            "scraped_at": now,
-            "last_seen_at": now,
-            "first_seen_at": now if not existing_row else None,
-            "n_price_cuts": n_cuts,
-            "original_price": original_price,
-            "raw_data": json.loads(json.dumps(listing, default=str)),
-        }, on_conflict="listing_id").execute()
+            n_cuts = int(existing_row.get("n_price_cuts", 0)) if existing_row else 0
+            original_price = existing_row.get("original_price") if existing_row else price
+
+            if existing_row and price is not None:
+                prev_price = ((
+                    client.table("price_history")
+                    .select("price_nok")
+                    .eq("listing_id", listing_id)
+                    .order("observed_at", desc=True)
+                    .limit(1)
+                    .execute()
+                ).data or [{}])[0].get("price_nok")
+                if prev_price and price < prev_price:
+                    n_cuts += 1
+
+            row = {
+                "listing_id": listing_id,
+                "scraped_at": now,
+                "last_seen_at": now,
+                "n_price_cuts": n_cuts,
+                "original_price": original_price,
+                "raw_data": json.loads(json.dumps(listing, default=str)),
+            }
+            if not existing_row:
+                row["first_seen_at"] = now
+
+            client.table("raw_listings").upsert(row, on_conflict="listing_id").execute()
+
+        except Exception:
+            # Fallback: minimal schema (table may not have extended columns yet)
+            client.table("raw_listings").upsert({
+                "listing_id": listing_id,
+                "scraped_at": now,
+                "raw_data": json.loads(json.dumps(listing, default=str)),
+            }, on_conflict="listing_id").execute()
 
         if price is not None:
-            client.table("price_history").insert({
-                "listing_id": listing_id,
-                "price_nok": int(price),
-                "observed_at": now,
-            }).execute()
+            try:
+                client.table("price_history").insert({
+                    "listing_id": listing_id,
+                    "price_nok": int(price),
+                    "observed_at": now,
+                }).execute()
+            except Exception:
+                pass  # price_history table may not exist yet
         return True
     except Exception as e:
         logger.error("Failed to upsert raw listing %s: %s", listing_id, e)
