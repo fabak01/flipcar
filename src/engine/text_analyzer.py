@@ -38,13 +38,13 @@ def _fallback_analysis() -> dict[str, Any]:
 
 
 def analyze_listing_text(listing_text: str, make: str, model: str, year: int) -> dict[str, Any]:
-    """Analyze listing text with Claude Sonnet when available, else fallback."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    """Analyze listing text with OpenAI gpt-4o-mini when available, else fallback."""
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return _fallback_analysis()
 
     try:
-        import anthropic  # type: ignore
+        from openai import OpenAI
     except Exception:
         return _fallback_analysis()
 
@@ -65,17 +65,18 @@ Returner denne JSON-strukturen:
 }}"""
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Du er en ekspert på norske bruktbiler. Svar kun med gyldig JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
             max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
         )
-        response_text = message.content[0].text
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
+        response_text = response.choices[0].message.content
         parsed = json.loads(response_text)
         if isinstance(parsed, dict):
             return parsed

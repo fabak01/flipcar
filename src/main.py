@@ -26,6 +26,7 @@ from src.engine.classifier import classify_deal
 from src.engine.comps import find_comps
 from src.engine.days_to_sell import estimate_days_to_sell
 from src.engine.pristips import get_pristips_cached
+from src.engine.mpp import calculate_mpp
 from src.engine.profit import calculate_profit
 from src.engine.rep_estimator import estimate_repairs
 from src.engine.screener import screen_listing
@@ -33,7 +34,7 @@ from src.engine.text_analyzer import analyze_listing_text
 from src.engine.underwriting import calculate_underwritten_exit
 from src.output.formatter import build_audit_record, write_csv, write_jsonl
 from src.output.telegram_bot import send_deal_alert, send_health_alert
-from src.scraper.finn_scraper import flatten_results, load_config, scrape_all_models
+from src.scraper.finn_scraper import flatten_results, load_config, scrape_all_models, scrape_model
 
 CONFIG_DIR = PROJECT_ROOT / "config"
 
@@ -101,7 +102,7 @@ def check_health(results: dict[str, list[dict[str, Any]]], params: dict[str, Any
     return status
 
 
-def run_daily() -> None:
+def run_daily(model_filter: str | None = None) -> None:
     load_dotenv()
     params = load_all_params()
 
@@ -109,7 +110,20 @@ def run_daily() -> None:
     config = load_config()
     model_map = {f"{m['make']}_{m['model']}".lower().replace(' ', '_').replace('-', '').replace('.', ''): m for m in config["models"]}
 
-    results = scrape_all_models(config)
+    if model_filter:
+        filter_lower = model_filter.lower()
+        filtered_models = [m for m in config["models"] if filter_lower in f"{m['make']} {m['model']}".lower()]
+        if not filtered_models:
+            logger.error("No models matching filter '%s'", model_filter)
+            return
+        logger.info("Filtered to %d model(s): %s", len(filtered_models), [f"{m['make']} {m['model']}" for m in filtered_models])
+        results = {}
+        for m in filtered_models:
+            key = f"{m['make']}_{m['model']}".lower().replace(' ', '_').replace('-', '').replace('.', '')
+            listings = scrape_model(m["make"], m["model"], m.get("finn_query", f"{m['make']} {m['model']}"), config["params"], config.get("aliases", {}))
+            results[key] = listings
+    else:
+        results = scrape_all_models(config)
     all_listings = flatten_results(results)
 
     for listing in all_listings:
@@ -156,11 +170,7 @@ def run_daily() -> None:
             days = {"p50": days_new["days_p50"], "p90": days_new["days_p90"], "bull": days_new["days_bull"], "source": days_new["source"]}
             profit = calculate_profit(listing, fmv_adjusted, rep, days, params, pristips=pristips)
 
-            mpp = min(
-                profit["assumed_entry_price"],
-                max(0, int(profit["assumed_entry_price"] - max(0, profit["scenarios"]["80pct_loan"]["profit_base"]) + params["mpp"]["target_profit"])),
-            )
-            mpp_data = {"mpp": int(mpp), "mpp_base": int(mpp), "mpp_bear": int(mpp)}
+            mpp_data = calculate_mpp(fmv_adjusted, rep, days, params)
 
             base_profit = profit["scenarios"]["80pct_loan"]["profit_base"]
             model_key = f"{listing.get('make','')}_{listing.get('model','')}".lower().replace(" ", "_").replace("-", "").replace(".", "")
@@ -205,4 +215,8 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run_daily()
+    import argparse
+    parser = argparse.ArgumentParser(description="FlipCar Deal Radar")
+    parser.add_argument("--model", type=str, default=None, help="Filter to a single model (e.g. 'Tesla Model 3')")
+    args = parser.parse_args()
+    run_daily(model_filter=args.model)
