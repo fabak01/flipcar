@@ -1,61 +1,31 @@
-"""General EV battery SOH sensitivity analysis."""
-
-from datetime import date
+"""EV / PHEV battery SOH sensitivity."""
 
 SOH_ADJUSTMENTS = {
-    95: 0,
-    92: 0,
-    90: 0,
-    88: -8000,
-    85: -15000,
-    82: -25000,
-    80: -35000,
-    75: -50000,
-    70: -65000,
+    95: 0, 92: 0, 90: 0,
+    88: -8000, 85: -15000, 82: -25000,
+    80: -35000, 75: -50000, 70: -65000,
 }
 
 
-def _expected_soh_for_age(make: str, model: str, year: int) -> tuple[int, int]:
-    """Simple heuristic expected SOH range by age and model family."""
-    age = max(date.today().year - int(year or date.today().year), 0)
-    make_model = f"{make} {model}".lower()
-
-    if "leaf" in make_model:
-        annual_drop = 2.6
-    elif "bmw" in make_model and "i3" in make_model:
-        annual_drop = 1.8
-    else:
-        annual_drop = 1.4
-
-    center = max(65, 100 - int(age * annual_drop))
-    lower = max(60, center - 5)
-    upper = min(100, center + 5)
-    return lower, upper
+def _build_rec(min_prof: int | None, expected: int) -> str:
+    if min_prof is None:
+        return "Ikke lønnsom selv med perfekt batteri"
+    if expected >= min_prof + 5:
+        return f"Sannsynligvis OK. Forventet SOH ~{expected}%, trenger ≥{min_prof}%."
+    if expected >= min_prof:
+        return f"Marginal. Forventet ~{expected}%, trenger ≥{min_prof}%. MÅ verifiseres."
+    return f"Risikabelt. Forventet ~{expected}%, men trenger ≥{min_prof}%."
 
 
-def _build_recommendation(min_profitable_soh: int | None, min_soh_for_target_profit: int | None) -> str:
-    """Build recommendation text from scenario thresholds."""
-    if min_profitable_soh is None:
-        return "ikke lønnsom selv med sterk batterihelse"
-    if min_soh_for_target_profit is None:
-        return "mulig lønnsom, men må verifisere SOH"
-    if min_soh_for_target_profit <= 82:
-        return "sannsynlig lønnsom"
-    if min_soh_for_target_profit <= 90:
-        return "må verifisere SOH"
-    return "risikabel uten høy SOH"
-
-
-def calculate_soh_scenarios(
+def calculate_soh_sensitivity(
     base_profit: float,
-    base_fmv_p50: float,
     is_ev: bool,
     soh_reported: float | None,
     make: str,
     model: str,
     year: int,
 ) -> dict:
-    """Calculate EV SOH sensitivity scenarios."""
+    """Calculate SOH sensitivity for EV/PHEV when SOH is missing."""
     if not is_ev:
         return {"applicable": False}
 
@@ -64,31 +34,32 @@ def calculate_soh_scenarios(
             "applicable": True,
             "soh_reported": soh_reported,
             "soh_missing": False,
-            "scenarios": None,
-            "recommendation": None,
-            "seller_question": None,
         }
 
-    scenarios = []
+    scenarios = {}
     min_profitable_soh = None
-    min_soh_for_target_profit = None
-
-    for soh, adjustment in sorted(SOH_ADJUSTMENTS.items(), reverse=True):
-        adjusted_fmv = base_fmv_p50 + adjustment
-        profit_estimate = base_profit + adjustment
-        scenarios.append({
-            "soh": soh,
-            "fmv_adjustment_nok": adjustment,
-            "adjusted_fmv_p50": round(adjusted_fmv),
-            "profit_estimate": round(profit_estimate),
-        })
-        if min_profitable_soh is None and profit_estimate >= 0:
+    for soh, adj in sorted(SOH_ADJUSTMENTS.items(), reverse=True):
+        profit_at_soh = base_profit + adj
+        scenarios[soh] = {
+            "adjustment": adj,
+            "profit": round(profit_at_soh),
+            "profitable": profit_at_soh > 0,
+        }
+        if profit_at_soh > 0 and min_profitable_soh is None:
             min_profitable_soh = soh
-        if min_soh_for_target_profit is None and profit_estimate >= 20000:
-            min_soh_for_target_profit = soh
 
-    expected_low, expected_high = _expected_soh_for_age(make, model, year)
-    recommendation = _build_recommendation(min_profitable_soh, min_soh_for_target_profit)
+    car_age = 2026 - int(year or 2026)
+    m = model.lower()
+    if "leaf" in m:
+        deg_per_year = 3.5
+    elif "i3" in m:
+        deg_per_year = 2.5
+    elif "outlander" in m:
+        deg_per_year = 2.0
+    else:
+        deg_per_year = 1.8
+
+    expected = round(max(100 - deg_per_year * car_age, 60))
 
     return {
         "applicable": True,
@@ -96,8 +67,13 @@ def calculate_soh_scenarios(
         "soh_missing": True,
         "scenarios": scenarios,
         "min_profitable_soh": min_profitable_soh,
-        "min_soh_for_target_profit": min_soh_for_target_profit,
-        "expected_soh_range": f"{expected_low}-{expected_high}%",
-        "recommendation": recommendation,
-        "seller_question": "Kan du oppgi dokumentert battery SOH (helst med bilde fra app/diagnose)?",
+        "expected_soh": expected,
+        "recommendation": _build_rec(min_profitable_soh, expected),
+        "seller_question": "Hva er batteriets helsestatus (SOH)? Har du mulighet til å kjøre en batteritest (LeafSpy, Tesla app, etc)?",
     }
+
+
+# Backward-compatible alias used by earlier code/tests.
+def calculate_soh_scenarios(base_profit: float, base_fmv_p50: float, is_ev: bool, soh_reported: float | None, make: str, model: str, year: int) -> dict:
+    del base_fmv_p50
+    return calculate_soh_sensitivity(base_profit, is_ev, soh_reported, make, model, year)

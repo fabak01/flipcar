@@ -1,28 +1,41 @@
 models:
   - make: Tesla
-    model: Model Y
-    finn_query: "tesla model y"
-  - make: Tesla
     model: Model 3
     finn_query: "tesla model 3"
+    fuel_type: electric
+  - make: Tesla
+    model: Model Y
+    finn_query: "tesla model y"
+    fuel_type: electric
   - make: Volkswagen
-    model: ID.4
-    finn_query: "volkswagen id.4"
+    model: Golf
+    finn_query: "volkswagen golf"
+    fuel_type: mixed
+  - make: Skoda
+    model: Octavia
+    finn_query: "skoda octavia"
+    fuel_type: mixed
+  - make: Toyota
+    model: Yaris
+    finn_query: "toyota yaris hybrid"
+    fuel_type: hybrid
+  - make: Toyota
+    model: Corolla
+    finn_query: "toyota corolla"
+    fuel_type: mixed
+  - make: Mitsubishi
+    model: Outlander PHEV
+    finn_query: "mitsubishi outlander phev"
+    fuel_type: plugin_hybrid
+  - make: BMW
+    model: 3-serie
+    finn_query: "bmw 3-serie"
+    fuel_type: mixed
   - make: Nissan
     model: Leaf
     finn_query: "nissan leaf"
-  - make: BMW
-    model: i3
-    finn_query: "bmw i3"
-  - make: Audi
-    model: e-tron
-    finn_query: "audi e-tron"
-  - make: Toyota
-    model: RAV4
-    finn_query: "toyota rav4"
-  - make: Hyundai
-    model: IONIQ 5
-    finn_query: "hyundai ioniq 5"
-  - make: Skoda
-    model: Enyaq
-    finn_query: "skoda enyaq"
+    fuel_type: electric
+  - make: Mercedes-Benz
+    model: E-Klasse
+    finn_query: "mercedes e-klasse"
+    fuel_type: mixed

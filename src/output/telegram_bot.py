@@ -76,6 +76,9 @@ def format_deal_alert(analysis: dict[str, Any]) -> str:
     flags = analysis.get("flags", [])
 
     scenario_80 = analysis.get("scenarios", {}).get("80pct_loan", {})
+    pristips = analysis.get("pristips") or {}
+    underwriting = analysis.get("underwriting") or {}
+    ai_analysis = analysis.get("ai_analysis") or {}
 
     mpp_val = mpp_data.get("mpp", 0)
     required_discount_to_mpp = analysis.get("required_discount_to_mpp")
@@ -90,6 +93,20 @@ def format_deal_alert(analysis: dict[str, Any]) -> str:
         f"{make} {model} {variant} {year} | {km:,} km",
         f"Lokasjon: {location}",
         f"Pris: {listing_price_nok:,} kr",
+        "",
+        "── MARKED ──",
+        f"FINN Pristips: {pristips.get('market_anchor_price', 'N/A')} kr",
+        f"Intervall: {pristips.get('market_anchor_low', 'N/A')} – {pristips.get('market_anchor_high', 'N/A')} kr",
+        f"Forventet salgstid: {pristips.get('market_days_to_sell', days.get('p50', 'N/A'))} dager",
+        f"Aktive lignende: {pristips.get('market_active_similar', 'N/A')}",
+        f"Solgt siste 90d: {pristips.get('market_sold_90d', 'N/A')}",
+        "",
+        "── UNDERWRITING ──",
+        f"Positive: {len(ai_analysis.get('positives', []))} funn",
+        f"Issues: {len(ai_analysis.get('issues', []))} funn",
+        f"Exit base: {underwriting.get('underwritten_exit_base', fmv.get('adjusted_p50', 0)):,} kr",
+        f"Exit bear: {underwriting.get('underwritten_exit_bear', fmv.get('adjusted_p10', 0)):,} kr",
+        "",
         "",
         f"FMV adjusted: {fmv.get('adjusted_p50', 0):,} kr ({comps.get('n_comps', 0)} comps, Tier {comps.get('tier', '?')})",
         f"MPP: {mpp_val:,} kr (trenger {required_discount_txt} rabatt)",
@@ -121,6 +138,15 @@ def format_deal_alert(analysis: dict[str, Any]) -> str:
         lines.append("")
         for flag in flags:
             lines.append(flag)
+
+    diligence = ai_analysis.get("diligence_items", [])
+    if diligence:
+        lines.append("")
+        lines.append("📋 SJEKK FØR KJØP:")
+        for item in diligence[:5]:
+            q = item.get("question")
+            if q:
+                lines.append(f"- {q}")
 
     lines.append("")
     lines.append(f'<a href="{url}">Se annonse</a>')

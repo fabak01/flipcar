@@ -283,7 +283,7 @@ def _get_next_page_url(soup: BeautifulSoup, current_url: str) -> Optional[str]:
         return None
 
     current_page = int(page_match.group(1))
-    return re.sub(r'([?&]page=)\d+', f'\g<1>{current_page + 1}', current_url)
+    return re.sub(r'([?&]page=)\d+', '\\g<1>' + str(current_page + 1), current_url)
 
 
 def scrape_model(
