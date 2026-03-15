@@ -270,20 +270,44 @@ def _normalize_listing(
     }
 
 
-def _get_next_page_url(soup: BeautifulSoup, current_url: str) -> Optional[str]:
-    """Find the next page URL from pagination."""
+def _get_next_page_url(soup: BeautifulSoup, current_url: str, had_results: bool = False) -> Optional[str]:
+    """Find the next page URL from pagination.
+
+    Args:
+        soup: Parsed HTML.
+        current_url: URL of the current page.
+        had_results: Whether the current page had listings. If True and no
+            explicit next link, we construct next page by incrementing page=N.
+    """
+    # Strategy 1: explicit rel="next" link
     next_link = soup.find("a", {"rel": "next"}) or soup.find("a", string=re.compile(r"Neste|Next|>"))
     if next_link and next_link.get("href"):
         href = next_link["href"]
         return href if href.startswith("http") else f"https://www.finn.no{href}"
 
-    # Fallback: increment page parameter if present
+    # Strategy 2: look for pagination links with page=N+1
     page_match = re.search(r'[?&]page=(\d+)', current_url)
-    if not page_match:
-        return None
+    current_page = int(page_match.group(1)) if page_match else 1
 
-    current_page = int(page_match.group(1))
-    return re.sub(r'([?&]page=)\d+', '\\g<1>' + str(current_page + 1), current_url)
+    # Check if there's any link containing page=N+1
+    next_page = current_page + 1
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        m = re.search(r'[?&]page=(\d+)', href)
+        if m and int(m.group(1)) == next_page:
+            return href if href.startswith("http") else f"https://www.finn.no{href}"
+
+    # Strategy 3: if current page had results, construct next URL by incrementing page param
+    # FINN's base64-encoded format doesn't have <a rel=next>, so we must construct it
+    if had_results:
+        if page_match:
+            return re.sub(r'([?&]page=)\d+', '\\g<1>' + str(next_page), current_url)
+        else:
+            # First page (no page= param yet), add page=2
+            sep = "&" if "?" in current_url else "?"
+            return f"{current_url}{sep}page=2"
+
+    return None
 
 
 def scrape_model(
@@ -319,6 +343,7 @@ def scrape_model(
     max_pages = params.get("max_pages_per_model", 20)
 
     stop_reason = "max_pages_reached"
+    expected_per_page = None  # Track first page size to detect short last pages
 
     for page_num in range(1, max_pages + 1):
         logger.info("Scraping %s %s page %d: %s", make, model, page_num, url)
@@ -361,6 +386,10 @@ def scrape_model(
             logger.info("Stopping pagination for %s %s on page %d: %s", make, model, page_num, stop_reason)
             break
 
+        # Track expected page size from first full page
+        if expected_per_page is None and len(raw_listings) >= 20:
+            expected_per_page = len(raw_listings)
+
         new_on_page = 0
         for raw in raw_listings:
             # Post-filter: verify heading contains expected make/model
@@ -379,13 +408,26 @@ def scrape_model(
             logger.info("Stopping pagination for %s %s on page %d: %s", make, model, page_num, stop_reason)
             break
 
+        logger.info("Page %d: %d new listings (total %d, raw %d)", page_num, new_on_page, len(all_listings), len(raw_listings))
+
+        # If this page had significantly fewer results than expected, it's the last page
+        is_short_page = (
+            expected_per_page is not None
+            and len(raw_listings) < expected_per_page * 0.7
+        )
+        if is_short_page:
+            stop_reason = "short_page_last"
+            logger.info("Stopping pagination for %s %s on page %d: short page (%d vs expected %d)",
+                         make, model, page_num, len(raw_listings), expected_per_page)
+            break
+
         # Rate limiting
         delay = random.uniform(params["delay_min"], params["delay_max"])
         logger.debug("Sleeping %.1f seconds before next page", delay)
         time.sleep(delay)
 
-        # Next page
-        next_url = _get_next_page_url(soup, url)
+        # Next page - pass had_results=True since we got listings on this page
+        next_url = _get_next_page_url(soup, url, had_results=(len(raw_listings) > 0))
         if not next_url or next_url == url:
             stop_reason = "no_next_page"
             logger.info("Stopping pagination for %s %s on page %d: %s", make, model, page_num, stop_reason)

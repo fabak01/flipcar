@@ -113,8 +113,15 @@ def clear_caches() -> bool:
         return False
 
 
+_regnr_registry_warned = False
+
+
 def upsert_regnr_registry(make: str, model: str, variant: str, year: int, registration_number: str) -> bool:
-    """Upsert a reference registration number into the registry."""
+    """Upsert a reference registration number into the registry.
+
+    Gracefully handles missing table (logs once, then silently skips).
+    """
+    global _regnr_registry_warned
     client = _get_client()
     if not client:
         return False
@@ -129,6 +136,13 @@ def upsert_regnr_registry(make: str, model: str, variant: str, year: int, regist
         }, on_conflict="make,model,variant,year").execute()
         return True
     except Exception as e:
+        err_str = str(e).lower()
+        if "regnr_registry" in err_str or "relation" in err_str or "does not exist" in err_str or "42P01" in err_str:
+            if not _regnr_registry_warned:
+                logger.warning("regnr_registry table not found in Supabase. Skipping persistence. "
+                               "Create it with the SQL in supabase_client.py if needed.")
+                _regnr_registry_warned = True
+            return False
         logger.error("Failed to upsert regnr_registry: %s", e)
         return False
 

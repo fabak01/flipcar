@@ -89,11 +89,20 @@ class TestPaginationHelper:
     def test_page_param_increment_fallback(self):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup('<html></html>', 'html.parser')
-        assert _get_next_page_url(soup, 'https://www.finn.no/mobility/search/car?q=tesla&page=2').endswith('page=3')
+        # With had_results=True, it should construct next page URL
+        assert _get_next_page_url(soup, 'https://www.finn.no/mobility/search/car?q=tesla&page=2', had_results=True).endswith('page=3')
+
+    def test_first_page_constructs_page2(self):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup('<html></html>', 'html.parser')
+        url = _get_next_page_url(soup, 'https://www.finn.no/mobility/search/car?q=tesla', had_results=True)
+        assert url is not None
+        assert 'page=2' in url
 
     def test_no_next_page_returns_none(self):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup('<html></html>', 'html.parser')
+        # Without had_results, no next page when there's no page= param
         assert _get_next_page_url(soup, 'https://www.finn.no/mobility/search/car?q=tesla') is None
 
 

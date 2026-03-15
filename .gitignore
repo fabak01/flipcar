@@ -13,3 +13,4 @@ deals.csv
 *.log
 .DS_Store
 .finn_cookies.json
+debug/
