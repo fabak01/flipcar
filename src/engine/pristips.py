@@ -1,4 +1,14 @@
-"""FINN Pristips integration – vehicle lookup + market data endpoints."""
+"""FINN Pristips integration.
+
+Primary path: Playwright browser extraction (requires FINN login).
+Fallback: public API endpoints for market data (no price estimate).
+
+The browser path extracts the actual visible price estimate shown on
+https://www.finn.no/mobility/insights/price-valuation after login.
+
+The API fallback provides days-to-sell, active/sold counts, but NOT
+the price estimate.
+"""
 
 import logging
 from datetime import datetime, timezone
@@ -11,16 +21,19 @@ from src.db.supabase_client import get_cached_pristips, upsert_pristips_cache
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://www.finn.no/mobility/insights/price-valuation/api"
-CLIENT_ID = "motor-price-valuation"
 _HEADERS = {
-    "X-Client-Id": CLIENT_ID,
+    "X-Client-Id": "motor-price-valuation",
     "Accept": "application/json",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 }
 
 
+# ---------------------------------------------------------------------------
+# Public API helpers (fallback, no price estimate)
+# ---------------------------------------------------------------------------
+
 def _lookup_vehicle(registration_number: str, km: int, timeout: int = 20) -> dict[str, Any] | None:
-    """Look up vehicle profile by regnr to get IDs for market queries."""
+    """Look up vehicle profile by regnr."""
     url = f"{API_BASE}/vehicles/price-valuation/{registration_number}?mileage={km}"
     resp = requests.get(url, headers=_HEADERS, timeout=timeout)
     resp.raise_for_status()
@@ -31,25 +44,17 @@ def _extract_vehicle_params(profile: dict[str, Any], km: int) -> dict[str, Any]:
     """Extract query params from vehicle profile for market data endpoints."""
     def _id(field: str) -> Any:
         v = profile.get(field, {})
-        if isinstance(v, dict):
-            return v.get("id")
-        return None
+        return v.get("id") if isinstance(v, dict) else None
 
     def _val(field: str) -> Any:
         v = profile.get(field, {})
-        if isinstance(v, dict):
-            return v.get("value") or v.get("id")
-        return v
+        return (v.get("value") or v.get("id")) if isinstance(v, dict) else v
 
     params: dict[str, Any] = {"mileage": km}
-
     for field, param in [
-        ("make", "makeId"),
-        ("model", "modelId"),
-        ("engineFuel", "engineFuelId"),
-        ("wheelDrive", "wheelDriveId"),
-        ("transmission", "transmissionId"),
-        ("registrationClass", "registrationClassId"),
+        ("make", "makeId"), ("model", "modelId"),
+        ("engineFuel", "engineFuelId"), ("wheelDrive", "wheelDriveId"),
+        ("transmission", "transmissionId"), ("registrationClass", "registrationClassId"),
         ("bodyType", "bodyTypeId"),
     ]:
         val = _id(field)
@@ -59,12 +64,11 @@ def _extract_vehicle_params(profile: dict[str, Any], km: int) -> dict[str, Any]:
     year = _val("modelYear")
     if year:
         params["modelYear"] = int(year)
-
     return params
 
 
 def _fetch_json(url: str, params: dict[str, Any], timeout: int = 20) -> dict[str, Any] | None:
-    """GET JSON from FINN API, return None on failure."""
+    """GET JSON, return None on failure."""
     try:
         resp = requests.get(url, params=params, headers=_HEADERS, timeout=timeout)
         if resp.ok:
@@ -74,104 +78,141 @@ def _fetch_json(url: str, params: dict[str, Any], timeout: int = 20) -> dict[str
     return None
 
 
-def _build_result(
-    registration_number: str,
-    km: int,
-    profile: dict[str, Any],
-    active_data: dict[str, Any] | None,
-    sold_data: dict[str, Any] | None,
-    pub_time: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Combine all API responses into unified market data structure."""
+def _fetch_api_market_data(registration_number: str, km: int) -> dict[str, Any]:
+    """Fetch market data from public API (no price estimate)."""
+    reg = registration_number.strip().upper().replace(" ", "")
+    profile = _lookup_vehicle(reg, int(km))
+    if not profile:
+        raise RuntimeError(f"Pristips API: no vehicle profile for {reg}")
 
-    # Active similar ads
-    active_total = None
-    new_last_30d = None
-    if active_data and isinstance(active_data, dict):
-        active_total = active_data.get("activeTotal")
-        new_last_30d = active_data.get("last30days")
+    vparams = _extract_vehicle_params(profile, int(km))
 
-    # Sold count
-    sold_90d = None
-    sold_30d = None
-    if sold_data and isinstance(sold_data, dict):
-        sold_90d = sold_data.get("last90Days") or sold_data.get("last90days")
-        sold_30d = sold_data.get("last30days") or sold_data.get("last30Days")
+    active = _fetch_json(f"{API_BASE}/ads/active", vparams)
+    sold = _fetch_json(f"{API_BASE}/ads/sold", vparams)
+    pub_time = _fetch_json(f"{API_BASE}/ads/distribution/publishing-time/summary", vparams)
 
     # Days to sell
     days_to_sell = None
     days_to_sell_90d = None
-    if pub_time and isinstance(pub_time, dict):
+    if pub_time:
         days_to_sell = pub_time.get("publishingTimeMedianLast30Days")
         days_to_sell_90d = pub_time.get("publishingTimeMedianLast90Days")
         if days_to_sell is None:
             quarterly = pub_time.get("countDistributionQuarterly", [])
             if quarterly:
-                latest = quarterly[-1]
-                days_to_sell = latest.get("publishingTimeMedian") or latest.get("standingTimeMedian")
-
-    # Vehicle info from profile
-    make_text = profile.get("make", {}).get("text", "")
-    model_text = profile.get("model", {}).get("text", "")
-    year_val = profile.get("modelYear", {}).get("value")
-    variants = profile.get("variants", [])
+                days_to_sell = quarterly[-1].get("publishingTimeMedian")
 
     return {
-        "registration_number": registration_number,
-        "km": km,
-        "vehicle_make": make_text,
-        "vehicle_model": model_text,
-        "vehicle_year": year_val,
-        "vehicle_variants": variants,
-        "days_to_sell": int(days_to_sell) if days_to_sell else None,
+        "registration_number": reg,
+        "km": int(km),
+        "market_anchor_price": None,  # API cannot provide this
+        "market_anchor_low": None,
+        "market_anchor_high": None,
+        "market_days_to_sell": int(days_to_sell) if days_to_sell else None,
         "days_to_sell_90d": round(days_to_sell_90d, 1) if days_to_sell_90d else None,
-        "active_similar": active_total,
-        "new_last_30d": new_last_30d,
-        "sold_90d": sold_90d,
-        "sold_last_30d": sold_30d,
-        "publishing_time_raw": pub_time,
-        "source": "finn_pristips",
+        "market_active_similar": active.get("activeTotal") if active else None,
+        "market_new_last_30d": active.get("last30days") if active else None,
+        "market_sold_90d": (sold.get("last90Days") or sold.get("last90days")) if sold else None,
+        "market_sold_last_30d": (sold.get("last30days") or sold.get("last30Days")) if sold else None,
+        "market_comps": [],
+        "vehicle_profile": {
+            "make": profile.get("make", {}).get("text", ""),
+            "model": profile.get("model", {}).get("text", ""),
+            "year": profile.get("modelYear", {}).get("value"),
+            "variants": profile.get("variants", []),
+        },
+        "source": "finn_pristips_api_fallback",
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
-def get_pristips(registration_number: str, km: int, timeout: int = 20) -> dict[str, Any]:
-    """Fetch FINN Pristips market data."""
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def get_pristips(
+    registration_number: str,
+    km: int,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """Fetch FINN Pristips data.
+
+    Primary path: Playwright browser extraction (gets actual price estimate).
+    Fallback: public API endpoints (market data only, no price estimate).
+
+    Returns:
+        {
+            "market_anchor_price": int | None,
+            "market_anchor_low": int | None,
+            "market_anchor_high": int | None,
+            "market_days_to_sell": int | None,
+            "market_active_similar": int | None,
+            "market_sold_90d": int | None,
+            "market_comps": list,
+            "source": "finn_pristips_browser" | "finn_pristips_api_fallback" | "cache",
+            "raw_payload": dict,
+            "fetched_at": iso_timestamp,
+        }
+    """
     reg = registration_number.strip().upper().replace(" ", "")
+    km_int = int(km)
 
-    profile = _lookup_vehicle(reg, int(km), timeout)
-    if not profile:
-        raise RuntimeError(f"Pristips: no vehicle profile for {reg}")
-
-    vparams = _extract_vehicle_params(profile, int(km))
-    logger.info("Pristips vehicle params for %s: %s", reg, vparams)
-
-    active_data = _fetch_json(f"{API_BASE}/ads/active", vparams, timeout)
-    sold_data = _fetch_json(f"{API_BASE}/ads/sold", vparams, timeout)
-    pub_time = _fetch_json(f"{API_BASE}/ads/distribution/publishing-time/summary", vparams, timeout)
-
-    result = _build_result(reg, int(km), profile, active_data, sold_data, pub_time)
-
-    logger.info(
-        "Pristips for %s: days=%s, active=%s, sold_90d=%s, sold_30d=%s",
-        reg, result["days_to_sell"], result["active_similar"],
-        result["sold_90d"], result["sold_last_30d"],
-    )
-
-    return result
-
-
-def get_pristips_cached(registration_number: str, km: int) -> dict[str, Any] | None:
-    """Cache wrapper: reuse cached result within 7 days."""
-    cached = get_cached_pristips(registration_number, int(km), max_age_days=7)
-    if cached:
-        return cached
-
+    # 1. Try browser extraction (primary path)
     try:
-        fresh = get_pristips(registration_number, int(km))
+        from src.engine.pristips_browser import extract_pristips_browser
+        browser_result = extract_pristips_browser(reg, km_int)
+        if browser_result and browser_result.get("market_anchor_price"):
+            logger.info(
+                "Pristips browser: price=%s for %s",
+                browser_result["market_anchor_price"], reg,
+            )
+            return browser_result
+        elif browser_result:
+            logger.info("Browser ran but no price estimate extracted for %s", reg)
+    except ImportError:
+        logger.debug("Playwright not available, skipping browser extraction")
     except Exception as e:
-        logger.warning("Pristips fetch failed for %s: %s", registration_number, e)
-        return None
+        logger.warning("Browser extraction failed for %s: %s", reg, e)
 
-    upsert_pristips_cache(registration_number, int(km), fresh)
-    return fresh
+    # 2. Fallback to public API
+    try:
+        api_result = _fetch_api_market_data(reg, km_int)
+        logger.info(
+            "Pristips API fallback for %s: days=%s, active=%s, sold_90d=%s",
+            reg, api_result.get("market_days_to_sell"),
+            api_result.get("market_active_similar"),
+            api_result.get("market_sold_90d"),
+        )
+        return api_result
+    except Exception as e:
+        logger.warning("Pristips API fallback also failed for %s: %s", reg, e)
+        return {
+            "market_anchor_price": None,
+            "market_anchor_low": None,
+            "market_anchor_high": None,
+            "market_days_to_sell": None,
+            "market_active_similar": None,
+            "market_sold_90d": None,
+            "market_comps": [],
+            "source": "failed",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+def get_pristips_cached(
+    registration_number: str,
+    km: int,
+    force_refresh: bool = False,
+) -> dict[str, Any] | None:
+    """Cache wrapper: reuse cached result within 7 days."""
+    if not force_refresh:
+        cached = get_cached_pristips(registration_number, int(km), max_age_days=7)
+        if cached:
+            cached["source"] = "cache"
+            return cached
+
+    result = get_pristips(registration_number, int(km), force_refresh=force_refresh)
+    if result and result.get("source") != "failed":
+        upsert_pristips_cache(registration_number, int(km), result)
+
+    return result if result.get("source") != "failed" else None
