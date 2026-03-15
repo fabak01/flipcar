@@ -42,10 +42,19 @@ def send_message(text: str, token: str = "", chat_id: str = "") -> bool:
 
 
 def fmt(n: Any) -> str:
-    """Format numbers with thousand separators."""
+    """Format numbers with Norwegian thousand separators (space)."""
     if n is None:
         return "N/A"
     return f"{int(round(n)):,}".replace(",", " ")
+
+
+def fmt_sign(n: Any) -> str:
+    """Format numbers with sign and thousand separators."""
+    if n is None:
+        return "N/A"
+    val = int(round(n))
+    s = f"{abs(val):,}".replace(",", " ")
+    return f"+{s}" if val >= 0 else f"-{s}"
 
 
 def format_deal_message(deal: dict[str, Any]) -> str:
@@ -66,11 +75,12 @@ def format_deal_message(deal: dict[str, Any]) -> str:
     # Market
     msg += "-- MARKED --\n"
     if m.get("anchor"):
-        msg += f"Comps FMV: <b>{fmt(m['anchor'])} kr</b>\n"
+        source_label = "Pristips" if m.get("source") == "finn_pristips" else "Comps FMV"
+        msg += f"{source_label}: <b>{fmt(m['anchor'])} kr</b>\n"
         if m.get("low") and m.get("high"):
             msg += f"Intervall: {fmt(m['low'])} - {fmt(m['high'])} kr\n"
         regnr_note = " (ref.regnr)" if l.get("regnr_source") == "reference" else ""
-        msg += f"Kilde: {m.get('source', 'comps')}{regnr_note}\n"
+        msg += f"Kilde: {m.get('source', 'ukjent')}{regnr_note}\n"
     else:
         msg += "Markedsdata: Utilgjengelig\n"
 
@@ -81,6 +91,11 @@ def format_deal_message(deal: dict[str, Any]) -> str:
         if m.get("sold_90d"):
             msg += f" | Solgt 90d: {m['sold_90d']}"
         msg += "\n"
+
+    # Comps info
+    comps = deal.get("comps", {})
+    if comps.get("n_comps", 0) > 0:
+        msg += f"Comps: {comps['n_comps']} stk (Tier {comps.get('tier', '?')})\n"
 
     # Underwriting
     msg += "\n-- UNDERWRITING --\n"
@@ -96,24 +111,28 @@ def format_deal_message(deal: dict[str, Any]) -> str:
         msg += f"Issues ({n_iss}): {iss_names}\n"
 
     exit_data = deal.get("exit", {})
-    msg += f"Exit base: {fmt(exit_data.get('base'))} kr\n"
-    msg += f"Exit bear: {fmt(exit_data.get('bear'))} kr\n"
+    msg += f"Exit: {fmt(exit_data.get('bull'))} / {fmt(exit_data.get('base'))} / {fmt(exit_data.get('bear'))} kr\n"
 
-    # Profit (all scenarios)
+    # Profit table (all 3 LTV x 3 time scenarios)
     msg += "\n-- PROFITT --\n"
     msg += "<pre>"
     msg += f"{'':12} {'Cash':>10} {'60% laan':>10} {'80% laan':>10}\n"
 
     for row_label, key in [("Bull:", "profit_bull"), ("Base:", "profit_base"), ("Bear:", "profit_bear")]:
-        cash_val = fmt(s.get("cash", {}).get(key))
-        s60_val = fmt(s.get("60pct", {}).get(key))
-        s80_val = fmt(s.get("80pct", {}).get(key))
+        cash_val = fmt_sign(s.get("cash", {}).get(key))
+        s60_val = fmt_sign(s.get("60pct", {}).get(key))
+        s80_val = fmt_sign(s.get("80pct", {}).get(key))
         msg += f"{row_label:12} {cash_val:>10} {s60_val:>10} {s80_val:>10}\n"
 
     cash_roe = s.get("cash", {}).get("roe_base_annual", "N/A")
     s60_roe = s.get("60pct", {}).get("roe_base_annual", "N/A")
     s80_roe = s.get("80pct", {}).get("roe_base_annual", "N/A")
     msg += f"{'ROE ann:':12} {str(cash_roe) + '%':>10} {str(s60_roe) + '%':>10} {str(s80_roe) + '%':>10}\n"
+
+    cash_eq = fmt(s.get("cash", {}).get("equity_required"))
+    s60_eq = fmt(s.get("60pct", {}).get("equity_required"))
+    s80_eq = fmt(s.get("80pct", {}).get("equity_required"))
+    msg += f"{'Egenkapital:':12} {cash_eq:>10} {s60_eq:>10} {s80_eq:>10}\n"
     msg += "</pre>\n"
 
     # MPP
@@ -126,7 +145,12 @@ def format_deal_message(deal: dict[str, Any]) -> str:
     # Entry
     e = deal.get("entry", {})
     msg += f"Antatt entry: {fmt(e.get('assumed_entry_price'))} kr ({e.get('total_discount', 0):.0%} rabatt)\n"
-    msg += f"Laan-anbefaling: {c.get('loan_rec', 'N/A')}\n"
+    msg += f"Laan-anbefaling: <b>{c.get('loan_rec', 'N/A')}</b>\n"
+
+    # Rep
+    rep = deal.get("rep", {})
+    if rep.get("p50", 0) > 0:
+        msg += f"Rep: {fmt(rep.get('p50'))} / {fmt(rep.get('p90'))} kr (p50/p90)\n"
 
     # SOH (only EVs with missing SOH)
     soh = deal.get("soh") or {}
@@ -143,7 +167,7 @@ def format_deal_message(deal: dict[str, Any]) -> str:
     if diligence:
         msg += "\n<b>SJEKK FOER KJOEP:</b>\n"
         for d in diligence[:5]:
-            q = d.get("question", "")
+            q = d.get("question", "") if isinstance(d, dict) else str(d)
             if q:
                 msg += f"- {q}\n"
 

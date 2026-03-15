@@ -25,20 +25,38 @@ def classify_deal_new(
     soh: dict | None,
     pristips: dict | None,
 ) -> dict[str, Any]:
-    """Classify a deal based on profit scenarios. New simplified interface."""
+    """Classify a deal based on profit scenarios. New simplified interface.
 
-    # No market data AND no AI = can't evaluate
+    Key rule: Never pitch a deal (KONTAKT) without solid market data.
+    Requires either Pristips price or comps to underwrite.
+    """
+
+    # No market data AND no AI = can't evaluate at all
     has_ai = ai and (ai.get("issues") or ai.get("positives"))
-    if not pristips and not has_ai:
+    has_pristips_price = pristips and pristips.get("market_anchor_price")
+    has_comps = listing.get("comp_result", {}).get("transaction_median") is not None
+
+    if not has_pristips_price and not has_comps:
         return {
             "emoji": "⚪",
             "label": "MONITOR",
             "send_telegram": False,
-            "reason": "Mangler markedsdata og AI-analyse",
+            "reason": "Mangler prisestimat (ingen Pristips eller comps)",
             "loan_rec": "Ikke bruk laan",
         }
 
-    # Normal classification
+    if not has_ai:
+        # We have price data but no AI analysis - don't pitch, manual review
+        if profit_base > 15000 and profit_bear > -5000:
+            cls = {"emoji": "🟠", "label": "MANUELL VURDERING", "send_telegram": False,
+                   "reason": "God profitt men mangler AI-analyse"}
+        else:
+            cls = {"emoji": "⚪", "label": "MONITOR", "send_telegram": False,
+                   "reason": "Mangler AI-analyse"}
+        cls["loan_rec"] = "Ikke bruk laan"
+        return cls
+
+    # Normal classification (has both market data + AI)
     if profit_base > 15000 and profit_bear > -5000:
         cls = {"emoji": "🟢", "label": "KONTAKT", "send_telegram": True}
     elif profit_base > 10000 and profit_bear > -15000:

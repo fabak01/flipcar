@@ -392,7 +392,8 @@ class TestClassifier:
         assert "80%" in result["loan_recommendation"]
 
     def test_new_classifier_green(self):
-        result = classify_deal_new(25000, 5000, {}, {"issues": [{"name": "x"}]}, None, {"days_to_sell": 15})
+        listing = {"comp_result": {"transaction_median": 400000}}
+        result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, {"market_anchor_price": 400000, "days_to_sell": 15})
         assert result["label"] == "KONTAKT"
         assert result["send_telegram"] is True
 
@@ -400,6 +401,20 @@ class TestClassifier:
         result = classify_deal_new(25000, 5000, {}, None, None, None)
         assert result["label"] == "MONITOR"
         assert result["send_telegram"] is False
+
+    def test_new_classifier_no_ai_no_pitch(self):
+        """Even with good profit, don't pitch without AI analysis."""
+        listing = {"comp_result": {"transaction_median": 400000}}
+        result = classify_deal_new(25000, 5000, listing, None, None, {"market_anchor_price": 400000})
+        assert result["label"] == "MANUELL VURDERING"
+        assert result["send_telegram"] is False
+
+    def test_new_classifier_pristips_only(self):
+        """Pristips price alone (no comps) is sufficient for classification."""
+        listing = {"comp_result": {"transaction_median": None}}
+        result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, {"market_anchor_price": 400000})
+        assert result["label"] == "KONTAKT"
+        assert result["send_telegram"] is True
 
 
 # --- Battery SOH ---
@@ -484,6 +499,30 @@ class TestUnderwriting:
         assert "80pct" in deal["scenarios"]
         assert "classification" in deal
         assert deal["market"]["source"] == "internal_comps"
+
+    def test_underwrite_deal_pristips_primary(self, sample_listing, params):
+        """Pristips price should be used as market anchor when available."""
+        sample_listing["comp_result"] = {"tier": None, "n_comps": 0, "transaction_median": None}
+        sample_listing["pristips"] = {
+            "market_anchor_price": 410000,
+            "market_anchor_low": 390000,
+            "market_anchor_high": 430000,
+            "market_days_to_sell": 15,
+            "market_active_similar": 50,
+            "market_sold_90d": 200,
+        }
+        sample_listing["ai_analysis"] = {
+            "issues": [{"name": "test", "cost_p50": 3000, "cost_p90": 5000}],
+            "positives": [{"name": "service", "value_nok": 5000}],
+            "condition_summary": {},
+        }
+        sample_listing["rep_estimate"] = {"total_p50": 5000, "total_p90": 12000}
+
+        deal = underwrite_deal(sample_listing, params)
+        assert deal["market"]["source"] == "finn_pristips"
+        assert deal["market"]["anchor"] == 410000
+        assert "scenarios" in deal
+        assert "80pct" in deal["scenarios"]
 
     def test_underwrite_deal_no_comps(self, sample_listing, params):
         sample_listing["comp_result"] = {"tier": None, "n_comps": 0, "transaction_median": None}

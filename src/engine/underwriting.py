@@ -1,4 +1,10 @@
-"""Full deal underwriting: comps-based FMV + Pristips market data + AI condition analysis."""
+"""Full deal underwriting: Pristips as primary anchor, comps as fallback.
+
+Hierarchy:
+1. Pristips market_anchor_price (browser with cookies) -> best
+2. Comps transaction_median (internal) -> fallback
+3. Neither -> MONITOR (no underwriting)
+"""
 
 from typing import Any
 
@@ -25,9 +31,20 @@ def estimate_entry_price(listing: dict[str, Any], pristips: dict | None, params:
     n_cuts = listing.get("n_price_cuts", 0)
     cut_bonus = min(n_cuts * 0.02, 0.06)
 
+    # Market position modifier (Pristips price vs listing price)
+    market_bonus = 0.0
+    if pristips and pristips.get("market_anchor_price") and listing_price > 0:
+        price_vs_market = listing_price / max(pristips["market_anchor_price"], 1)
+        if price_vs_market > 1.10:
+            market_bonus = 0.04
+        elif price_vs_market > 1.05:
+            market_bonus = 0.02
+        elif price_vs_market < 0.95:
+            market_bonus = -0.02
+
     seller_mod = -0.02 if listing.get("seller_type") == "forhandler" else 0.0
 
-    total_discount = max(base_discount + age_bonus + cut_bonus + seller_mod, 0.01)
+    total_discount = max(base_discount + age_bonus + cut_bonus + market_bonus + seller_mod, 0.01)
     total_discount = min(total_discount, 0.20)
 
     assumed_entry = round(listing_price * (1 - total_discount))
@@ -42,27 +59,38 @@ def estimate_entry_price(listing: dict[str, Any], pristips: dict | None, params:
 def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     """Full underwriting of a deal.
 
-    Uses comps-based FMV as market anchor, Pristips for days-to-sell
-    and market liquidity, AI analysis for condition adjustments.
+    Uses Pristips as primary market anchor when available.
+    Falls back to comps-based FMV.
     """
     pristips = listing.get("pristips") or {}
     ai = listing.get("ai_analysis") or {}
     comp_result = listing.get("comp_result") or {}
 
-    # === MARKET ANCHOR (from comps) ===
-    market_anchor = comp_result.get("transaction_median")
+    # === MARKET ANCHOR (Pristips first, comps fallback) ===
+    market_anchor = None
     market_low = None
     market_high = None
-    fmv_source = "internal_comps"
+    fmv_source = "none"
 
-    if market_anchor and comp_result.get("comp_transaction_prices"):
-        import numpy as np
-        prices = np.array(comp_result["comp_transaction_prices"])
-        market_low = round(float(np.percentile(prices, 20)))
-        market_high = round(float(np.percentile(prices, 80)))
-    elif market_anchor:
-        market_low = round(market_anchor * 0.90)
-        market_high = round(market_anchor * 1.10)
+    # Priority 1: Pristips price estimate
+    if pristips.get("market_anchor_price"):
+        market_anchor = pristips["market_anchor_price"]
+        market_low = pristips.get("market_anchor_low") or round(market_anchor * 0.93)
+        market_high = pristips.get("market_anchor_high") or round(market_anchor * 1.07)
+        fmv_source = "finn_pristips"
+
+    # Priority 2: Comps transaction median
+    if market_anchor is None and comp_result.get("transaction_median"):
+        market_anchor = comp_result["transaction_median"]
+        if comp_result.get("comp_transaction_prices"):
+            import numpy as np
+            prices = np.array(comp_result["comp_transaction_prices"])
+            market_low = round(float(np.percentile(prices, 20)))
+            market_high = round(float(np.percentile(prices, 80)))
+        else:
+            market_low = round(market_anchor * 0.90)
+            market_high = round(market_anchor * 1.10)
+        fmv_source = "internal_comps"
 
     if market_anchor is None:
         return {
@@ -85,8 +113,8 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
 
     # === UNDERWRITTEN EXIT ===
     exit_base = market_anchor + positive_adj - negative_adj_p50
-    exit_bear = (market_low or round(market_anchor * 0.9)) + positive_adj * 0.5 - negative_adj_p90
-    exit_bull = (market_high or round(market_anchor * 1.1)) + positive_adj - negative_adj_p50 * 0.5
+    exit_bear = market_low + positive_adj * 0.5 - negative_adj_p90
+    exit_bull = market_high + positive_adj - negative_adj_p50 * 0.5
 
     # === SALES COSTS ===
     sales_fixed = params.get("profit", {}).get("sales_fixed_costs", 1390)
@@ -104,14 +132,14 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
     rep_p90 = rep.get("total_p90", 0)
 
     # === DAYS TO SELL ===
-    market_days = pristips.get("days_to_sell")
+    market_days = pristips.get("market_days_to_sell")
     if market_days:
         days_base = int(market_days)
     else:
         from .days_to_sell import get_model_baseline
         days_base = get_model_baseline(listing.get("make", ""), listing.get("model", ""), params)
 
-    # Adjust for pricing relative to comps
+    # Adjust for pricing relative to market
     if market_anchor and listing.get("price_nok") and listing["price_nok"] < market_anchor * 0.95:
         days_base = round(days_base * 0.7)
 
@@ -184,9 +212,9 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
             "low": market_low,
             "high": market_high,
             "days_to_sell": market_days,
-            "active_similar": pristips.get("active_similar"),
-            "sold_90d": pristips.get("sold_90d"),
-            "sold_last_30d": pristips.get("sold_last_30d"),
+            "active_similar": pristips.get("market_active_similar"),
+            "sold_90d": pristips.get("market_sold_90d"),
+            "sold_last_30d": pristips.get("market_sold_last_30d"),
         },
         "ai_analysis": ai,
         "adjustments": {
