@@ -37,8 +37,237 @@ _HEADERS = {
 # Browser extraction (primary path, requires cookies)
 # ---------------------------------------------------------------------------
 
+# Shared selectors used by both get_pristips() and debug_pristips.py
+REGNR_SELECTORS = [
+    'input#r0',
+    'input[name="registration-number"]',
+    'input[name*="registration"]',
+    'input[placeholder*="registrering"]',
+    'input[placeholder*="regnr"]',
+    'input[aria-label*="Registreringsnummer"]',
+]
+
+KM_SELECTORS = [
+    'input#mileage',
+    'input[name="mileage"]',
+    'input[name*="mileage"]',
+    'input[placeholder*="km"]',
+    'input[placeholder*="Kilometerstand"]',
+    'input[aria-label*="Kilometerstand"]',
+    'input[aria-label*="km"]',
+]
+
+SUBMIT_SELECTORS = [
+    'button:has-text("Sjekk bil")',
+    'button:has-text("Sjekk")',
+    'button:has-text("Hent")',
+    'button:has-text("Beregn")',
+    'button[type="submit"]',
+]
+
+UPDATE_SELECTORS = [
+    'button:has-text("Oppdater")',
+    'button:has-text("Beregn")',
+    'button:has-text("Sjekk")',
+]
+
+
+def run_pristips_browser_session(
+    regnr: str,
+    km: int,
+    cookies: list[dict],
+    headless: bool = True,
+) -> dict[str, Any]:
+    """Shared browser automation for Pristips — used by both get_pristips() and debug_pristips.py.
+
+    Returns a dict with:
+        - inner_text: str — rendered page text
+        - html: str — full page HTML
+        - captured_responses: list — intercepted XHR JSON responses
+        - final_url: str — URL after form submit
+        - screenshot_bytes: bytes | None — PNG screenshot (for debugging)
+        - login_required: bool — True if cookies are expired
+        - regnr_filled: bool
+        - km_refilled: bool — True if km was re-entered on result page
+        - error: str | None — error message if something went wrong
+    """
+    from playwright.sync_api import sync_playwright
+
+    captured_responses: list[dict[str, Any]] = []
+
+    def _on_response(response):
+        url = response.url
+        ct = response.headers.get("content-type", "")
+        if "json" in ct:
+            try:
+                body = response.json()
+            except Exception:
+                body = None
+            captured_responses.append({"url": url, "status": response.status, "body": body})
+            logger.debug("Captured XHR: %s (status=%d)", url, response.status)
+
+    out: dict[str, Any] = {
+        "inner_text": "",
+        "html": "",
+        "captured_responses": [],
+        "final_url": "",
+        "screenshot_bytes": None,
+        "login_required": False,
+        "regnr_filled": False,
+        "km_refilled": False,
+        "error": None,
+    }
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=headless)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 900},
+            )
+            context.add_cookies(cookies)
+            page = context.new_page()
+            page.on("response", _on_response)
+
+            # --- Navigate ---
+            page.goto(PRISTIPS_URL, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(2000)
+
+            # Cookie banner
+            try:
+                page.click("button:has-text('Godta alle')", timeout=2000)
+            except Exception:
+                pass
+
+            # --- Fill regnr ---
+            for sel in REGNR_SELECTORS:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=500):
+                        el.fill(regnr)
+                        out["regnr_filled"] = True
+                        logger.debug("Filled regnr using selector: %s", sel)
+                        break
+                except Exception:
+                    continue
+            if not out["regnr_filled"]:
+                # Last resort: first visible text input
+                try:
+                    el = page.locator('input[type="text"]').first
+                    if el.is_visible(timeout=500):
+                        el.fill(regnr)
+                        out["regnr_filled"] = True
+                        logger.debug("Filled regnr using fallback: input[type=text]")
+                except Exception:
+                    pass
+            if not out["regnr_filled"]:
+                out["error"] = "Could not find regnr input field"
+                browser.close()
+                return out
+
+            page.wait_for_timeout(500)
+
+            # --- Fill km (first attempt — may not be visible yet) ---
+            km_filled_initial = False
+            for sel in KM_SELECTORS:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=500):
+                        el.fill(str(km))
+                        km_filled_initial = True
+                        logger.debug("Filled km using selector: %s", sel)
+                        break
+                except Exception:
+                    continue
+            if not km_filled_initial:
+                logger.debug("No km field found before submit (may appear after)")
+
+            page.wait_for_timeout(500)
+
+            # --- Submit ---
+            submitted = False
+            for sel in SUBMIT_SELECTORS:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.is_visible(timeout=500):
+                        btn.click()
+                        submitted = True
+                        logger.debug("Clicked submit: %s", sel)
+                        break
+                except Exception:
+                    continue
+            if not submitted:
+                page.keyboard.press("Enter")
+                logger.debug("Pressed Enter as submit fallback")
+
+            # --- Wait for results (match debug_pristips.py timing exactly) ---
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(5000)  # Match debug_pristips.py: 5s extra wait
+
+            # --- Check for login redirect ---
+            out["final_url"] = page.url
+            body_text = page.evaluate("document.body?.innerText || ''")
+            if ("login" in out["final_url"] or "auth" in out["final_url"]
+                    or "E-postadresse" in body_text or "Logg inn" in body_text):
+                out["login_required"] = True
+                out["inner_text"] = body_text
+                browser.close()
+                return out
+
+            # --- Second km fill if needed (on result page) ---
+            for sel in KM_SELECTORS[:3]:  # input#mileage, input[name=mileage], input[name*=mileage]
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=500):
+                        cur_val = el.input_value()
+                        if not cur_val or cur_val == "0":
+                            el.fill(str(km))
+                            out["km_refilled"] = True
+                            logger.info("Re-filled km on result page: %s (was %r)", sel, cur_val)
+                            for btn_sel in UPDATE_SELECTORS:
+                                try:
+                                    btn = page.locator(btn_sel).first
+                                    if btn.is_visible(timeout=500):
+                                        btn.click()
+                                        logger.debug("Clicked update button: %s", btn_sel)
+                                        try:
+                                            page.wait_for_load_state("networkidle", timeout=10000)
+                                        except Exception:
+                                            pass
+                                        page.wait_for_timeout(3000)
+                                        break
+                                except Exception:
+                                    continue
+                        break
+                except Exception:
+                    continue
+
+            # --- Collect final page state ---
+            out["inner_text"] = page.evaluate("document.body?.innerText || ''")
+            out["html"] = page.content()
+            out["captured_responses"] = captured_responses
+
+            # Screenshot for debugging
+            try:
+                out["screenshot_bytes"] = page.screenshot(full_page=True)
+            except Exception:
+                pass
+
+            browser.close()
+
+    except Exception as e:
+        out["error"] = str(e)
+
+    return out
+
+
 def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
     """Open FINN Pristips with headless browser, fill in regnr + km, parse results.
+
+    Uses the same browser automation as debug_pristips.py via run_pristips_browser_session().
 
     Three extraction strategies (in order):
     1. Parse innerText of rendered page for PRICE (most reliable)
@@ -52,220 +281,74 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
     cookies = json.loads(COOKIE_FILE.read_text())
 
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright  # noqa: F401
     except ImportError:
         logger.warning("Playwright ikke installert. Kjoer: pip install playwright && playwright install chromium")
         return None
 
-    result = None
-    captured_responses: list[dict[str, Any]] = []
+    # --- Run shared browser session ---
+    session = run_pristips_browser_session(regnr, km, cookies, headless=True)
 
-    def _on_response(response):
-        """Capture JSON API responses from FINN's internal endpoints."""
-        url = response.url
-        ct = response.headers.get("content-type", "")
-        if "json" in ct and ("price-valuation" in url or "pristips" in url.lower()):
-            try:
-                body = response.json()
-            except Exception:
-                body = None
-            captured_responses.append({"url": url, "status": response.status, "body": body})
-            logger.debug("Captured XHR: %s (status=%d)", url, response.status)
-
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-gpu"],
-            )
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 900},
-            )
-
-            context.add_cookies(cookies)
-            page = context.new_page()
-
-            # Intercept all API responses
-            page.on("response", _on_response)
-
-            # Navigate
-            page.goto(PRISTIPS_URL, wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_timeout(2000)
-
-            # Accept cookies banner
-            try:
-                page.click("button:has-text('Godta alle')", timeout=2000)
-            except Exception:
-                pass
-
-            # Fill regnr - try multiple selectors
-            regnr_filled = False
-            for selector in [
-                'input#r0',
-                'input[name="registration-number"]',
-                'input[name*="registration"]',
-                'input[placeholder*="registrering"]',
-                'input[placeholder*="regnr"]',
-                'input[aria-label*="Registreringsnummer"]',
-                'input[type="text"]',
-            ]:
-                try:
-                    el = page.locator(selector).first
-                    if el.is_visible(timeout=1000):
-                        el.fill(regnr)
-                        regnr_filled = True
-                        logger.debug("Filled regnr using selector: %s", selector)
-                        break
-                except Exception:
-                    continue
-
-            if not regnr_filled:
-                logger.warning("Could not find regnr input field")
-                browser.close()
-                return None
-
-            page.wait_for_timeout(500)
-
-            # Fill km - try multiple selectors
-            for selector in [
-                'input#mileage',
-                'input[name="mileage"]',
-                'input[name*="mileage"]',
-                'input[placeholder*="km"]',
-                'input[placeholder*="Kilometerstand"]',
-                'input[aria-label*="Kilometerstand"]',
-            ]:
-                try:
-                    el = page.locator(selector).first
-                    if el.is_visible(timeout=1000):
-                        el.fill(str(km))
-                        logger.debug("Filled km using selector: %s", selector)
-                        break
-                except Exception:
-                    continue
-
-            page.wait_for_timeout(500)
-
-            # Submit - try multiple strategies
-            submitted = False
-            for selector in [
-                'button:has-text("Sjekk bil")',
-                'button:has-text("Sjekk")',
-                'button:has-text("Hent")',
-                'button[type="submit"]',
-                'form button',
-            ]:
-                try:
-                    btn = page.locator(selector).first
-                    if btn.is_visible(timeout=1000):
-                        btn.click()
-                        submitted = True
-                        logger.debug("Clicked submit using selector: %s", selector)
-                        break
-                except Exception:
-                    continue
-
-            if not submitted:
-                page.keyboard.press("Enter")
-                logger.debug("Pressed Enter as submit fallback")
-
-            # Wait for results to load (watch for network idle or specific element)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                page.wait_for_timeout(8000)
-
-            # Extra wait for React rendering
-            page.wait_for_timeout(3000)
-
-            # Check for login redirect (cookies expired)
-            current_url = page.url
-            body_text = page.evaluate("document.body?.innerText || ''")
-            if "login" in current_url or "auth" in current_url or "E-postadresse" in body_text:
-                logger.warning("FINN cookies utloept. Kjoer: python scripts/get_finn_cookies.py")
-                browser.close()
-                return None
-
-            # Fill km on result page if there's a separate km field
-            for selector in [
-                'input#mileage',
-                'input[name="mileage"]',
-                'input[placeholder*="km"]',
-            ]:
-                try:
-                    el = page.locator(selector).first
-                    if el.is_visible(timeout=1000):
-                        current_val = el.input_value()
-                        if not current_val or current_val == "0":
-                            el.fill(str(km))
-                            # Look for update button
-                            for btn_sel in [
-                                'button:has-text("Oppdater")',
-                                'button:has-text("Beregn")',
-                                'button:has-text("Sjekk")',
-                            ]:
-                                try:
-                                    btn = page.locator(btn_sel).first
-                                    if btn.is_visible(timeout=1000):
-                                        btn.click()
-                                        try:
-                                            page.wait_for_load_state("networkidle", timeout=10000)
-                                        except Exception:
-                                            page.wait_for_timeout(5000)
-                                        break
-                                except Exception:
-                                    continue
-                        break
-                except Exception:
-                    continue
-
-            # === STRATEGY 1: innerText for PRICE (most reliable) ===
-            inner_text = page.evaluate("document.body?.innerText || ''")
-            result = _parse_pristips_innertext(inner_text)
-
-            # === STRATEGY 2: XHR for MARKET ACTIVITY only (days, active, sold) ===
-            xhr_data = _extract_market_activity_from_xhr(captured_responses)
-            if xhr_data:
-                if result is None:
-                    result = {}
-                # Merge XHR market activity INTO result, but never overwrite price
-                for k, v in xhr_data.items():
-                    if v is not None and result.get(k) is None:
-                        result[k] = v
-
-            if result and result.get("market_anchor_price"):
-                logger.info("Pristips extracted for %s: price=%s (innerText)", regnr, result["market_anchor_price"])
-                browser.close()
-                return result
-
-            # === STRATEGY 3: Inline script JSON (last resort for price) ===
-            html_content = page.content()
-            script_data = _parse_pristips_script_json(html_content)
-            if script_data and script_data.get("market_anchor_price"):
-                if result is None:
-                    result = {}
-                for k, v in script_data.items():
-                    if v is not None and result.get(k) is None:
-                        result[k] = v
-                logger.info("Pristips extracted for %s: price=%s (script JSON)", regnr, result.get("market_anchor_price"))
-                browser.close()
-                return result
-
-            # All strategies failed for price - save debug snapshot
-            _save_debug_snapshot(regnr, km, html_content if 'html_content' in dir() else "", inner_text, captured_responses)
-            logger.warning("Pristips: price extraction failed for %s. Debug saved.", regnr)
-
-            # Return partial data (market activity without price) if we have any
-            if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
-                browser.close()
-                return result
-
-            browser.close()
-
-    except Exception as e:
-        logger.error("Browser-feil for %s: %s", regnr, e)
+    if session.get("error"):
+        logger.error("Browser session error for %s: %s", regnr, session["error"])
         return None
+
+    if session.get("login_required"):
+        logger.warning("FINN cookies utloept. Kjoer: python scripts/get_finn_cookies.py")
+        return None
+
+    inner_text = session["inner_text"]
+    captured_responses = session["captured_responses"]
+
+    # --- Diagnostic logging ---
+    logger.info(
+        "Pristips browser session for %s: url=%s, km_refilled=%s, "
+        "innerText_len=%d, has_ca=%s, has_mellom=%s, xhr_count=%d",
+        regnr,
+        session["final_url"],
+        session["km_refilled"],
+        len(inner_text),
+        "'ca.' found" if "ca." in inner_text else "no 'ca.'",
+        "'mellom' found" if "mellom" in inner_text else "no 'mellom'",
+        len(captured_responses),
+    )
+
+    # === STRATEGY 1: innerText for PRICE (most reliable) ===
+    result = _parse_pristips_innertext(inner_text)
+
+    # === STRATEGY 2: XHR for MARKET ACTIVITY only (days, active, sold) ===
+    xhr_data = _extract_market_activity_from_xhr(captured_responses)
+    if xhr_data:
+        if result is None:
+            result = {}
+        # Merge XHR market activity INTO result, but never overwrite price
+        for k, v in xhr_data.items():
+            if v is not None and result.get(k) is None:
+                result[k] = v
+
+    if result and result.get("market_anchor_price"):
+        logger.info("Pristips extracted for %s: price=%s (innerText)", regnr, result["market_anchor_price"])
+        return result
+
+    # === STRATEGY 3: Inline script JSON (last resort for price) ===
+    html_content = session["html"]
+    script_data = _parse_pristips_script_json(html_content)
+    if script_data and script_data.get("market_anchor_price"):
+        if result is None:
+            result = {}
+        for k, v in script_data.items():
+            if v is not None and result.get(k) is None:
+                result[k] = v
+        logger.info("Pristips extracted for %s: price=%s (script JSON)", regnr, result.get("market_anchor_price"))
+        return result
+
+    # All strategies failed for price — save debug artifacts
+    _save_debug_artifacts(regnr, km, session)
+    logger.warning("Pristips: price extraction failed for %s. Debug artifacts saved.", regnr)
+
+    # Return partial data (market activity without price) if we have any
+    if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
+        return result
 
     return None
 
@@ -610,32 +693,61 @@ def _parse_nok(s: str) -> int:
     return int(re.sub(r'[\s\xa0]+', '', s.strip()))
 
 
-def _save_debug_snapshot(
-    regnr: str, km: int, html: str, innertext: str, xhr: list[dict[str, Any]]
-) -> None:
-    """Save debug HTML + text + XHR responses for debugging failed extractions."""
+def _save_debug_artifacts(regnr: str, km: int, session: dict[str, Any]) -> None:
+    """Save comprehensive debug artifacts when extraction fails.
+
+    Saves: screenshot, HTML, innerText, XHR responses, and a summary.
+    Same artifacts as debug_pristips.py for easy comparison.
+    """
     try:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        prefix = f"{ts}_{regnr}"
+        out_dir = DEBUG_DIR / f"pristips_{regnr}_{km}_{ts}"
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        (DEBUG_DIR / f"{prefix}.html").write_text(html, encoding="utf-8")
-        (DEBUG_DIR / f"{prefix}.txt").write_text(innertext, encoding="utf-8")
+        inner_text = session.get("inner_text", "")
+        html = session.get("html", "")
+        xhr = session.get("captured_responses", [])
 
-        xhr_safe = []
-        for r in xhr:
-            xhr_safe.append({
-                "url": r.get("url", ""),
-                "status": r.get("status"),
-                "body": r.get("body"),
-            })
-        (DEBUG_DIR / f"{prefix}_xhr.json").write_text(
+        # Screenshot
+        screenshot = session.get("screenshot_bytes")
+        if screenshot:
+            (out_dir / "screenshot.png").write_bytes(screenshot)
+
+        # HTML
+        (out_dir / "page.html").write_text(html, encoding="utf-8")
+
+        # Inner text
+        (out_dir / "inner_text.txt").write_text(inner_text, encoding="utf-8")
+
+        # XHR responses
+        xhr_safe = [{"url": r.get("url", ""), "status": r.get("status"), "body": r.get("body")} for r in xhr]
+        (out_dir / "xhr_responses.json").write_text(
             json.dumps(xhr_safe, indent=2, default=str, ensure_ascii=False),
             encoding="utf-8",
         )
-        logger.info("Debug snapshot saved to %s/%s.*", DEBUG_DIR, prefix)
+
+        # Summary
+        summary = [
+            f"Pristips extraction FAILED for {regnr} / {km} km",
+            f"Timestamp: {ts}",
+            f"Final URL: {session.get('final_url', '')}",
+            f"Login required: {session.get('login_required', False)}",
+            f"Regnr filled: {session.get('regnr_filled', False)}",
+            f"KM refilled: {session.get('km_refilled', False)}",
+            f"InnerText length: {len(inner_text)} chars",
+            f"HTML length: {len(html)} chars",
+            f"XHR responses captured: {len(xhr)}",
+            f"Contains 'ca.': {'ca.' in inner_text}",
+            f"Contains 'mellom': {'mellom' in inner_text}",
+            f"Contains 'Prisestimat': {'Prisestimat' in inner_text}",
+            f"Contains 'Selg den selv': {'Selg den selv' in inner_text}",
+            f"Error: {session.get('error')}",
+        ]
+        (out_dir / "summary.txt").write_text("\n".join(summary), encoding="utf-8")
+
+        logger.info("Debug artifacts saved to %s", out_dir)
     except Exception as e:
-        logger.debug("Failed to save debug snapshot: %s", e)
+        logger.debug("Failed to save debug artifacts: %s", e)
 
 
 # ---------------------------------------------------------------------------
