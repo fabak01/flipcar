@@ -269,10 +269,11 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
 
     Uses the same browser automation as debug_pristips.py via run_pristips_browser_session().
 
-    Three extraction strategies (in order):
-    1. Parse innerText of rendered page for PRICE (most reliable)
-    2. Intercept XHR API responses for MARKET ACTIVITY only (days, active, sold)
-    3. Parse inline <script> JSON data (last resort for price)
+    Four extraction strategies (in order):
+    1. XHR /api/ads/price/valuation endpoint for PRICE (authoritative source)
+    2. XHR other endpoints for MARKET ACTIVITY (days, active, sold)
+    3. innerText parsing for PRICE (fallback if valuation XHR missing)
+    4. Inline script JSON for PRICE (last resort)
     """
     if not COOKIE_FILE.exists():
         logger.warning("Ingen FINN cookies funnet. Kjoer: python scripts/get_finn_cookies.py")
@@ -313,33 +314,51 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
         len(captured_responses),
     )
 
-    # === STRATEGY 1: innerText for PRICE (most reliable) ===
-    result = _parse_pristips_innertext(inner_text)
+    result: dict[str, Any] = {}
 
-    # === STRATEGY 2: XHR for MARKET ACTIVITY only (days, active, sold) ===
-    xhr_data = _extract_market_activity_from_xhr(captured_responses)
-    if xhr_data:
-        if result is None:
-            result = {}
-        # Merge XHR market activity INTO result, but never overwrite price
-        for k, v in xhr_data.items():
+    # === STRATEGY 1: XHR /api/ads/price/valuation for PRICE (authoritative) ===
+    valuation = _extract_valuation_from_xhr(captured_responses)
+    if valuation:
+        result.update(valuation)
+        logger.info("Pristips extracted for %s: price=%s (valuation XHR)", regnr, result["market_anchor_price"])
+
+    # === STRATEGY 2: XHR other endpoints for MARKET ACTIVITY (days, active, sold) ===
+    xhr_activity = _extract_market_activity_from_xhr(captured_responses)
+    if xhr_activity:
+        for k, v in xhr_activity.items():
             if v is not None and result.get(k) is None:
                 result[k] = v
 
-    if result and result.get("market_anchor_price"):
-        logger.info("Pristips extracted for %s: price=%s (innerText)", regnr, result["market_anchor_price"])
-        return result
+    # === STRATEGY 3: innerText for PRICE (fallback if valuation XHR missing) ===
+    if not result.get("market_anchor_price"):
+        innertext_data = _parse_pristips_innertext(inner_text)
+        if innertext_data:
+            for k, v in innertext_data.items():
+                if v is not None and result.get(k) is None:
+                    result[k] = v
+            if result.get("market_anchor_price"):
+                logger.info("Pristips extracted for %s: price=%s (innerText fallback)", regnr, result["market_anchor_price"])
 
-    # === STRATEGY 3: Inline script JSON (last resort for price) ===
-    html_content = session["html"]
-    script_data = _parse_pristips_script_json(html_content)
-    if script_data and script_data.get("market_anchor_price"):
-        if result is None:
-            result = {}
-        for k, v in script_data.items():
-            if v is not None and result.get(k) is None:
-                result[k] = v
-        logger.info("Pristips extracted for %s: price=%s (script JSON)", regnr, result.get("market_anchor_price"))
+    # === STRATEGY 4: Inline script JSON for PRICE (last resort) ===
+    if not result.get("market_anchor_price"):
+        html_content = session["html"]
+        script_data = _parse_pristips_script_json(html_content)
+        if script_data:
+            for k, v in script_data.items():
+                if v is not None and result.get(k) is None:
+                    result[k] = v
+            if result.get("market_anchor_price"):
+                logger.info("Pristips extracted for %s: price=%s (script JSON fallback)", regnr, result.get("market_anchor_price"))
+
+    # Also merge any extra data from innerText (comp stats, days, etc.) even if we got price from XHR
+    if result.get("market_anchor_price") and valuation:
+        innertext_data = _parse_pristips_innertext(inner_text)
+        if innertext_data:
+            for k, v in innertext_data.items():
+                if v is not None and result.get(k) is None:
+                    result[k] = v
+
+    if result.get("market_anchor_price"):
         return result
 
     # All strategies failed for price — save debug artifacts
@@ -350,6 +369,45 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
     if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
         return result
 
+    return None
+
+
+def _extract_valuation_from_xhr(responses: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Extract price from the /api/ads/price/valuation XHR endpoint.
+
+    This is the authoritative Pristips price source. The response shape is:
+    {"prices": {"min": 222640.5625, "max": 245784.703125, "median": 234101.265625}, "occurrence": 9507}
+    """
+    for resp in responses:
+        url = resp.get("url", "")
+        if "/api/ads/price/valuation" not in url:
+            continue
+        body = resp.get("body")
+        if not body or not isinstance(body, dict):
+            continue
+        prices = body.get("prices")
+        if not isinstance(prices, dict):
+            continue
+        median = prices.get("median")
+        lo = prices.get("min")
+        hi = prices.get("max")
+        if (isinstance(median, (int, float)) and isinstance(lo, (int, float))
+                and isinstance(hi, (int, float))
+                and 10000 < lo <= median <= hi < 10_000_000):
+            result = {
+                "market_anchor_price": round(median),
+                "market_anchor_low": round(lo),
+                "market_anchor_high": round(hi),
+            }
+            occurrence = body.get("occurrence")
+            if isinstance(occurrence, (int, float)) and occurrence > 0:
+                result["valuation_occurrence"] = int(occurrence)
+            logger.info(
+                "Pristips valuation XHR: price=%d, low=%d, high=%d (occurrence=%s)",
+                result["market_anchor_price"], result["market_anchor_low"],
+                result["market_anchor_high"], occurrence,
+            )
+            return result
     return None
 
 

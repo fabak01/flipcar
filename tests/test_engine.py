@@ -20,7 +20,7 @@ from src.engine.mpp import calculate_mpp
 from src.engine.classifier import classify_deal, classify_deal_new
 from src.engine.battery_soh import calculate_soh_scenarios
 from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr
-from src.engine.pristips import _parse_pristips_innertext, _extract_market_activity_from_xhr
+from src.engine.pristips import _parse_pristips_innertext, _extract_market_activity_from_xhr, _extract_valuation_from_xhr
 from src.engine.underwriting import underwrite_deal
 from src.output.formatter import build_audit_record
 
@@ -535,6 +535,69 @@ class TestPristipsXhrMarketActivity:
         assert result is not None
         assert result["market_days_to_sell"] == 22
         assert result["market_active_similar"] == 50
+
+
+class TestPristipsValuationXhr:
+    VALUATION_URL = (
+        "https://www.finn.no/mobility/insights/price-valuation/api/ads/price/valuation"
+        "?bodyTypeId=3&wheelDriveId=2&transmissionId=2&engineFuelId=4"
+        "&makeId=8078&modelId=2000501&registrationClassId=1&modelYear=2021"
+        "&numberOfSeats=5&engineEffect=498&mileage=72000"
+    )
+
+    def test_exact_valuation_payload(self):
+        """Parse the exact payload from live debug artifacts."""
+        responses = [{"url": self.VALUATION_URL, "status": 200, "body": {
+            "prices": {
+                "min": 222640.5625,
+                "max": 245784.703125,
+                "median": 234101.265625,
+            },
+            "occurrence": 9507,
+        }}]
+        result = _extract_valuation_from_xhr(responses)
+        assert result is not None
+        assert result["market_anchor_price"] == 234101
+        assert result["market_anchor_low"] == 222641
+        assert result["market_anchor_high"] == 245785
+        assert result["valuation_occurrence"] == 9507
+
+    def test_ignores_non_valuation_urls(self):
+        """Must NOT match /api/ads/active or /api/ads/sold or other endpoints."""
+        responses = [
+            {"url": "https://finn.no/api/ads/active?makeId=8078", "status": 200, "body": {
+                "prices": {"min": 100000, "max": 300000, "median": 200000},
+            }},
+            {"url": "https://finn.no/api/ads/distribution/price/summary", "status": 200, "body": {
+                "prices": {"min": 150000, "max": 350000, "median": 250000},
+            }},
+        ]
+        result = _extract_valuation_from_xhr(responses)
+        assert result is None
+
+    def test_missing_prices_dict(self):
+        responses = [{"url": self.VALUATION_URL, "status": 200, "body": {
+            "occurrence": 9507,
+        }}]
+        assert _extract_valuation_from_xhr(responses) is None
+
+    def test_empty_responses(self):
+        assert _extract_valuation_from_xhr([]) is None
+
+    def test_valuation_among_many_responses(self):
+        """Valuation endpoint found among other XHR responses."""
+        responses = [
+            {"url": "https://finn.no/api/ads/active?x=1", "status": 200, "body": {"activeTotal": 50}},
+            {"url": "https://finn.no/api/ads/sold?x=1", "status": 200, "body": {"last90Days": 80}},
+            {"url": self.VALUATION_URL, "status": 200, "body": {
+                "prices": {"min": 222640.5625, "max": 245784.703125, "median": 234101.265625},
+                "occurrence": 9507,
+            }},
+            {"url": "https://finn.no/api/other", "status": 200, "body": {"foo": "bar"}},
+        ]
+        result = _extract_valuation_from_xhr(responses)
+        assert result is not None
+        assert result["market_anchor_price"] == 234101
 
 
 # --- Battery SOH ---
