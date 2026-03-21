@@ -430,22 +430,55 @@ class TestClassifier:
 # --- Pristips extraction ---
 
 class TestPristipsInnerText:
+    REALISTIC_INNERTEXT = (
+        "FINN Pristips\n"
+        "Selg den selv på FINN\n"
+        "Basert på maskinlæring\n"
+        "ca. 234\xa0000 kr\n"
+        "Omtrent 60 % av lignende biler har en pris p\u00e5 mellom 223\xa0000 og 246\xa0000 kr.\n"
+        "Selges vanligvis innen 45 dager\n"
+        "12 biler inn siste 30 dager\n"
+        "8 biler ut siste 30 dager\n"
+        "\n"
+        "Prisstatistikk\n"
+        "Lignende biler til salgs\n"
+        "Median\n"
+        "264 434 kr\n"
+        "Billigste\n"
+        "144 532 kr\n"
+        "Dyreste\n"
+        "339 000 kr\n"
+        "72 000 km\n"
+    )
+
     def test_ca_price_extraction(self):
         """innerText 'ca. 234 000 kr' should give market_anchor_price=234000."""
-        text = """
-FINN Pristips
-Prisestimat for din bil
-ca. 234 000 kr
-Omtrent 60 % av lignende biler har en pris på mellom 223 000 og 246 000 kr.
-Selges vanligvis innen 45 dager
-12 biler inn siste 30 dager
-8 biler ut siste 30 dager
-"""
-        result = _parse_pristips_innertext(text)
+        result = _parse_pristips_innertext(self.REALISTIC_INNERTEXT)
         assert result is not None
         assert result["market_anchor_price"] == 234000
         assert result["market_anchor_low"] == 223000
         assert result["market_anchor_high"] == 246000
+
+    def test_does_not_pick_comps_as_price(self):
+        """Must NOT pick median/cheapest/dyreste/km as anchor price."""
+        result = _parse_pristips_innertext(self.REALISTIC_INNERTEXT)
+        assert result is not None
+        assert result["market_anchor_price"] == 234000  # NOT 264434, 144532, 339000, or 72000
+
+    def test_comps_in_separate_fields(self):
+        """Comp stats should go into comp_median etc., not anchor price."""
+        result = _parse_pristips_innertext(self.REALISTIC_INNERTEXT)
+        assert result is not None
+        assert result.get("comp_median") == 264434
+        assert result.get("comp_cheapest") == 144532
+        assert result.get("comp_most_expensive") == 339000
+
+    def test_nbsp_handling(self):
+        """Non-breaking spaces (\\xa0) must be normalized and not break regex."""
+        text = "Prisestimat\nca.\xa0234\xa0000\xa0kr\nmellom 200\xa0000 og 250\xa0000 kr.\n"
+        result = _parse_pristips_innertext(text)
+        assert result is not None
+        assert result["market_anchor_price"] == 234000
 
     def test_mellom_range_without_ca(self):
         """Extract range even when no 'ca.' price is present."""

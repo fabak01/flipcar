@@ -324,72 +324,94 @@ def _extract_market_activity_from_xhr(responses: list[dict[str, Any]]) -> dict[s
 
 
 def _parse_pristips_innertext(text: str) -> dict[str, Any] | None:
-    """Parse the visible innerText of the Pristips result page."""
+    """Parse the visible innerText of the Pristips result page.
+
+    Targets the main estimate section near 'Selg den selv' / 'Basert på maskinlæring'.
+    Does NOT accidentally pick up later comps/distribution values (median, cheapest, etc.).
+    """
     if not text or len(text) < 50:
         return None
 
+    # --- Normalize text: \xa0 → space, collapse whitespace within lines ---
+    text = text.replace('\xa0', ' ')
+    lines_raw = text.split('\n')
+    lines = [re.sub(r' {2,}', ' ', l.strip()) for l in lines_raw if l.strip()]
+
     result: dict[str, Any] = {}
 
-    # The price estimate typically appears as one of these patterns:
-    # "244 000 kr" near "prisestimat" / "estimert" / "verdi"
-    # "ca. 244 000 kr"
+    # --- Find the main estimate section ---
+    # The price estimate appears near "Selg den selv på FINN" or "Prisestimat"
+    # and before the comps/distribution section (marked by "Prisstatistikk",
+    # "Median", "Billigste", "Dyreste", "Lignende biler til salgs").
+    estimate_start = 0
+    estimate_end = len(lines)
 
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-
-    # Strategy: find price estimate by context
     for i, line in enumerate(lines):
         ll = line.lower()
-        # Look for indicator words
-        if any(k in ll for k in ['prisestimat', 'estimert pris', 'estimert verdi', 'selg den selv']):
-            # Price is usually on this line or nearby
-            for j in range(max(0, i - 2), min(len(lines), i + 5)):
-                price = _extract_price_from_text(lines[j])
-                if price:
-                    result["market_anchor_price"] = price
-                    break
-            if result.get("market_anchor_price"):
+        if any(k in ll for k in ['selg den selv', 'prisestimat', 'basert på maskinlæring']):
+            estimate_start = max(0, i - 1)
+            break
+
+    for i, line in enumerate(lines):
+        ll = line.lower()
+        if i > estimate_start and any(k in ll for k in ['prisstatistikk', 'lignende biler til salgs', 'median']):
+            estimate_end = i
+            break
+
+    estimate_lines = lines[estimate_start:estimate_end]
+
+    # --- Extract anchor price: "ca. XXX XXX kr" in estimate section ---
+    for line in estimate_lines:
+        m = re.search(r'ca\.?\s*([\d\s]+\d)\s*kr', line)
+        if m:
+            val = _parse_nok(m.group(1))
+            if 10000 < val < 10000000:
+                result["market_anchor_price"] = val
+                logger.debug("Pristips innerText anchor price: %d from line: %r", val, line)
                 break
 
-    # Fallback: "ca. NNN NNN kr" anywhere
+    # Fallback: any "NNN NNN kr" on a short line in estimate section (standalone price)
     if not result.get("market_anchor_price"):
-        for line in lines:
-            m = re.search(r'ca\.?\s*([\d\s]+\d)\s*kr', line)
-            if m:
-                val = _parse_nok(m.group(1))
-                if 10000 < val < 10000000:
-                    result["market_anchor_price"] = val
-                    break
-
-    # Fallback: large standalone price (NNN NNN kr) that looks like an estimate
-    if not result.get("market_anchor_price"):
-        for line in lines:
+        for line in estimate_lines:
+            # Skip lines that contain "km" (mileage) or comp keywords
+            if re.search(r'\bkm\b', line, re.IGNORECASE):
+                continue
             m = re.search(r'\b(\d{2,3}\s\d{3})\s*kr\b', line)
             if m:
                 val = _parse_nok(m.group(1))
                 if 50000 < val < 5000000:
-                    # Only use if this looks like a standalone price (not inside a sentence with other numbers)
-                    other_nums = re.findall(r'\d{2,3}\s\d{3}', line)
-                    if len(other_nums) <= 2:
+                    # Only short lines (likely standalone price, not a sentence with other numbers)
+                    if len(line) < 30:
                         result["market_anchor_price"] = val
+                        logger.debug("Pristips innerText anchor price (fallback): %d from line: %r", val, line)
                         break
 
-    # Interval: "mellom X og Y" or "X – Y kr"
-    for line in lines:
+    # --- Extract range: "mellom X og Y kr" in estimate section ---
+    for line in estimate_lines:
         m = re.search(r'mellom\s*([\d\s]+\d)\s*og\s*([\d\s]+\d)\s*kr', line)
-        if m:
-            result["market_anchor_low"] = _parse_nok(m.group(1))
-            result["market_anchor_high"] = _parse_nok(m.group(2))
-            break
-        m = re.search(r'([\d\s]{5,}\d)\s*[-–]\s*([\d\s]{5,}\d)\s*kr', line)
         if m:
             lo = _parse_nok(m.group(1))
             hi = _parse_nok(m.group(2))
             if 10000 < lo < hi < 10000000:
                 result["market_anchor_low"] = lo
                 result["market_anchor_high"] = hi
+                logger.debug("Pristips innerText range: %d–%d from line: %r", lo, hi, line)
                 break
 
-    # Days to sell
+    # Fallback: "X – Y kr" range pattern
+    if not result.get("market_anchor_low"):
+        for line in estimate_lines:
+            m = re.search(r'([\d\s]{5,}\d)\s*[-–]\s*([\d\s]{5,}\d)\s*kr', line)
+            if m:
+                lo = _parse_nok(m.group(1))
+                hi = _parse_nok(m.group(2))
+                if 10000 < lo < hi < 10000000:
+                    result["market_anchor_low"] = lo
+                    result["market_anchor_high"] = hi
+                    logger.debug("Pristips innerText range (dash): %d–%d from line: %r", lo, hi, line)
+                    break
+
+    # --- Days to sell (from full text, not just estimate section) ---
     for line in lines:
         m = re.search(r'(\d+)\s*dager', line)
         if m:
@@ -398,7 +420,7 @@ def _parse_pristips_innertext(text: str) -> dict[str, Any] | None:
                 result["market_days_to_sell"] = d
                 break
 
-    # Active: "X biler inn" or "X aktive"
+    # --- Active: "X biler inn" or "X aktive" ---
     for line in lines:
         m = re.search(r'(\d+)\s*biler?\s*inn', line)
         if m:
@@ -409,30 +431,39 @@ def _parse_pristips_innertext(text: str) -> dict[str, Any] | None:
             result["market_active_similar"] = int(m.group(1))
             break
 
-    # Sold: "X biler ut" or "X solgt"
+    # --- Sold: "X biler ut" or "X solgt" ---
     for line in lines:
         m = re.search(r'(\d+)\s*biler?\s*ut', line)
         if m:
             result["market_sold_90d"] = int(m.group(1))
             break
 
-    # Median, cheapest, most expensive
-    for line in lines:
+    # --- Comp stats (from AFTER estimate section — informational only) ---
+    # Keywords may be on the same line as the price, or the price may be on the next line
+    comp_lines = lines[estimate_end:]
+    for i, line in enumerate(comp_lines):
         ll = line.lower()
-        if 'median' in ll:
-            p = _extract_price_from_text(line)
-            if p:
-                result["comp_median"] = p
-        if 'billigste' in ll:
-            p = _extract_price_from_text(line)
-            if p:
-                result["comp_cheapest"] = p
-        if 'dyreste' in ll:
-            p = _extract_price_from_text(line)
-            if p:
-                result["comp_most_expensive"] = p
+        for keyword, field in [('median', 'comp_median'), ('billigste', 'comp_cheapest'), ('dyreste', 'comp_most_expensive')]:
+            if keyword in ll:
+                # Try price on same line first
+                p = _extract_price_from_text(line)
+                # If not found, try the next line
+                if not p and i + 1 < len(comp_lines):
+                    p = _extract_price_from_text(comp_lines[i + 1])
+                if p:
+                    result[field] = p
 
     result["market_comps"] = []
+
+    if result.get("market_anchor_price"):
+        logger.debug(
+            "Pristips innerText parsed: price=%s, low=%s, high=%s, days=%s",
+            result.get("market_anchor_price"),
+            result.get("market_anchor_low"),
+            result.get("market_anchor_high"),
+            result.get("market_days_to_sell"),
+        )
+
     return result if result else None
 
 
