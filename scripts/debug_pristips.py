@@ -23,6 +23,7 @@ from src.engine.pristips import (
     run_pristips_browser_session,
     _parse_pristips_innertext,
     _extract_market_activity_from_xhr,
+    _extract_valuation_from_xhr,
 )
 
 DEBUG_DIR = PROJECT_ROOT / "debug"
@@ -125,20 +126,24 @@ def run(regnr: str, km: int, visible: bool = False):
 
     # --- Now attempt extraction using the SAME parsers as get_pristips() ---
     print("\n" + "=" * 60)
-    print("EXTRACTION (using same parsers as get_pristips)")
+    print("EXTRACTION (using same parsers and order as get_pristips)")
     print("=" * 60)
 
-    # Strategy 1: innerText parser
-    print("\n--- Strategy 1: _parse_pristips_innertext ---")
-    result = _parse_pristips_innertext(inner_text)
-    if result:
-        for k, v in sorted(result.items()):
-            if v is not None and k != "market_comps":
+    # Strategy 1 (PRIMARY): XHR /api/ads/price/valuation
+    print("\n--- Strategy 1: _extract_valuation_from_xhr (PRIMARY) ---")
+    valuation = _extract_valuation_from_xhr(captured)
+    if valuation:
+        for k, v in sorted(valuation.items()):
+            if v is not None:
                 print(f"  {k} = {v}")
-        if result.get("market_anchor_price"):
-            print(f"\n  *** PRICE FOUND: {result['market_anchor_price']:,} kr (innerText) ***")
+        print(f"\n  *** PRICE FOUND: {valuation['market_anchor_price']:,} kr (valuation XHR) ***")
     else:
-        print("  No result from innerText parser")
+        print("  No valuation endpoint response found")
+        # Show which URLs we did capture
+        for i, resp in enumerate(captured):
+            url = resp.get("url", "")
+            if "price" in url.lower() or "valuation" in url.lower():
+                print(f"  Candidate URL #{i+1}: {url[:120]}")
 
     # Strategy 2: XHR market activity
     print("\n--- Strategy 2: _extract_market_activity_from_xhr ---")
@@ -150,18 +155,17 @@ def run(regnr: str, km: int, visible: bool = False):
     else:
         print("  No market activity from XHR")
 
-    # --- Additional diagnostic: raw price search in XHR ---
-    print("\n--- Diagnostic: deep price search in XHR (NOT used by get_pristips) ---")
-    for i, resp in enumerate(captured):
-        body = resp.get("body")
-        url = resp.get("url", "")
-        if not body:
-            continue
-        prices_found = _deep_search_prices(body)
-        if prices_found:
-            print(f"  Response {i + 1}: {url[:80]}")
-            for key, val in prices_found.items():
-                print(f"    {key} = {val}")
+    # Strategy 3 (fallback): innerText parser
+    print("\n--- Strategy 3: _parse_pristips_innertext (fallback) ---")
+    innertext_result = _parse_pristips_innertext(inner_text)
+    if innertext_result:
+        for k, v in sorted(innertext_result.items()):
+            if v is not None and k != "market_comps":
+                print(f"  {k} = {v}")
+        if innertext_result.get("market_anchor_price"):
+            print(f"  innerText price: {innertext_result['market_anchor_price']:,} kr")
+    else:
+        print("  No result from innerText parser")
 
     # --- Diagnostic: innerText lines with prices ---
     print("\n--- Diagnostic: innerText lines with prices ---")
@@ -175,16 +179,31 @@ def run(regnr: str, km: int, visible: bool = False):
     print("SUMMARY")
     print("=" * 60)
 
-    found_price = result.get("market_anchor_price") if result else None
+    # Priority: valuation XHR > innerText > nothing
+    found_price = None
+    found_source = None
+    found_low = None
+    found_high = None
+
+    if valuation and valuation.get("market_anchor_price"):
+        found_price = valuation["market_anchor_price"]
+        found_low = valuation.get("market_anchor_low")
+        found_high = valuation.get("market_anchor_high")
+        found_source = "valuation XHR (/api/ads/price/valuation)"
+    elif innertext_result and innertext_result.get("market_anchor_price"):
+        found_price = innertext_result["market_anchor_price"]
+        found_low = innertext_result.get("market_anchor_low")
+        found_high = innertext_result.get("market_anchor_high")
+        found_source = "innerText fallback"
+
     summary_lines = []
 
     if found_price:
-        msg = f"PRICE FOUND: {found_price:,} kr (innerText parser)"
+        msg = f"PRICE FOUND: {found_price:,} kr ({found_source})"
         print(f"\n  *** {msg} ***")
         summary_lines.append(msg)
-        if result:
-            summary_lines.append(f"market_anchor_low: {result.get('market_anchor_low')}")
-            summary_lines.append(f"market_anchor_high: {result.get('market_anchor_high')}")
+        summary_lines.append(f"market_anchor_low: {found_low}")
+        summary_lines.append(f"market_anchor_high: {found_high}")
     else:
         print("\n  *** PRICE NOT FOUND ***")
         print("\n  Next steps:")

@@ -599,6 +599,48 @@ class TestPristipsValuationXhr:
         assert result is not None
         assert result["market_anchor_price"] == 234101
 
+    def test_live_72123_payload(self):
+        """Integration test: exact payload from live debug run with km=72123."""
+        responses = [
+            # Other XHR responses that come before the valuation
+            {"url": "https://www.finn.no/mobility/insights/price-valuation/api/ads/active?bodyTypeId=3&makeId=8078&modelId=2000501&mileage=72123", "status": 200, "body": {
+                "activeTotal": 147, "last30days": 42, "last7days": 12,
+            }},
+            {"url": "https://www.finn.no/mobility/insights/price-valuation/api/ads/sold?bodyTypeId=3&makeId=8078&modelId=2000501&mileage=72123", "status": 200, "body": {
+                "last90Days": 312, "last30Days": 98, "last7Days": 25,
+            }},
+            # The authoritative valuation endpoint
+            {"url": "https://www.finn.no/mobility/insights/price-valuation/api/ads/price/valuation?bodyTypeId=3&wheelDriveId=2&transmissionId=2&engineFuelId=4&makeId=8078&modelId=2000501&registrationClassId=1&modelYear=2021&numberOfSeats=5&engineEffect=498&mileage=72123", "status": 200, "body": {
+                "prices": {
+                    "min": 222567.703125,
+                    "max": 245710.03125,
+                    "median": 234027.625,
+                },
+                "occurrence": 9507,
+            }},
+            # Some unrelated response after
+            {"url": "https://www.finn.no/mobility/insights/price-valuation/api/ads/distribution/price/summary?makeId=8078&modelId=2000501&mileage=72123", "status": 200, "body": {
+                "value": 72123,  # This is mileage echo, NOT a price
+                "median": 264434,  # This is comp median, NOT anchor price
+            }},
+        ]
+        # Valuation extraction
+        valuation = _extract_valuation_from_xhr(responses)
+        assert valuation is not None
+        assert valuation["market_anchor_price"] == 234028
+        assert valuation["market_anchor_low"] == 222568
+        assert valuation["market_anchor_high"] == 245710
+        assert valuation["valuation_occurrence"] == 9507
+
+        # Market activity extraction (from active + sold endpoints)
+        activity = _extract_market_activity_from_xhr(responses)
+        assert activity is not None
+        assert activity["market_active_similar"] == 147
+        assert activity["market_sold_90d"] == 312
+
+        # Verify activity extractor does NOT produce a price
+        assert "market_anchor_price" not in activity
+
 
 # --- Battery SOH ---
 

@@ -302,9 +302,11 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
     captured_responses = session["captured_responses"]
 
     # --- Diagnostic logging ---
+    # Log ALL captured XHR URLs for debugging
+    valuation_urls = [r.get("url", "") for r in captured_responses if "/api/ads/price/valuation" in r.get("url", "")]
     logger.info(
         "Pristips browser session for %s: url=%s, km_refilled=%s, "
-        "innerText_len=%d, has_ca=%s, has_mellom=%s, xhr_count=%d",
+        "innerText_len=%d, has_ca=%s, has_mellom=%s, xhr_count=%d, valuation_urls=%d",
         regnr,
         session["final_url"],
         session["km_refilled"],
@@ -312,7 +314,15 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
         "'ca.' found" if "ca." in inner_text else "no 'ca.'",
         "'mellom' found" if "mellom" in inner_text else "no 'mellom'",
         len(captured_responses),
+        len(valuation_urls),
     )
+    if valuation_urls:
+        for vu in valuation_urls:
+            logger.info("  Valuation URL found: %s", vu[:150])
+    else:
+        logger.warning("  NO valuation URL in %d captured responses. URLs:", len(captured_responses))
+        for r in captured_responses:
+            logger.warning("    %s", r.get("url", "")[:150])
 
     result: dict[str, Any] = {}
 
@@ -320,7 +330,10 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
     valuation = _extract_valuation_from_xhr(captured_responses)
     if valuation:
         result.update(valuation)
-        logger.info("Pristips extracted for %s: price=%s (valuation XHR)", regnr, result["market_anchor_price"])
+        logger.info("Pristips STRATEGY 1 SUCCESS for %s: price=%s, low=%s, high=%s",
+                     regnr, result["market_anchor_price"], result.get("market_anchor_low"), result.get("market_anchor_high"))
+    else:
+        logger.warning("Pristips STRATEGY 1 FAILED for %s: no valuation data from XHR", regnr)
 
     # === STRATEGY 2: XHR other endpoints for MARKET ACTIVITY (days, active, sold) ===
     xhr_activity = _extract_market_activity_from_xhr(captured_responses)
@@ -359,11 +372,19 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
                     result[k] = v
 
     if result.get("market_anchor_price"):
+        logger.info(
+            "Pristips RETURNING for %s: price=%s, low=%s, high=%s, keys=%s",
+            regnr, result["market_anchor_price"], result.get("market_anchor_low"),
+            result.get("market_anchor_high"), sorted(k for k, v in result.items() if v is not None),
+        )
         return result
 
     # All strategies failed for price — save debug artifacts
     _save_debug_artifacts(regnr, km, session)
-    logger.warning("Pristips: price extraction failed for %s. Debug artifacts saved.", regnr)
+    logger.warning(
+        "Pristips: ALL STRATEGIES FAILED for %s. result_keys=%s. Debug artifacts saved.",
+        regnr, sorted(k for k, v in result.items() if v is not None) if result else "empty",
+    )
 
     # Return partial data (market activity without price) if we have any
     if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
@@ -378,19 +399,24 @@ def _extract_valuation_from_xhr(responses: list[dict[str, Any]]) -> dict[str, An
     This is the authoritative Pristips price source. The response shape is:
     {"prices": {"min": 222640.5625, "max": 245784.703125, "median": 234101.265625}, "occurrence": 9507}
     """
-    for resp in responses:
+    logger.debug("_extract_valuation_from_xhr: scanning %d responses", len(responses))
+    for i, resp in enumerate(responses):
         url = resp.get("url", "")
         if "/api/ads/price/valuation" not in url:
             continue
+        logger.info("Valuation XHR matched: response #%d url=%s", i, url[:120])
         body = resp.get("body")
         if not body or not isinstance(body, dict):
+            logger.warning("Valuation XHR body missing or not dict: %r", type(body))
             continue
         prices = body.get("prices")
         if not isinstance(prices, dict):
+            logger.warning("Valuation XHR missing 'prices' dict. Keys: %s", list(body.keys()))
             continue
         median = prices.get("median")
         lo = prices.get("min")
         hi = prices.get("max")
+        logger.info("Valuation XHR prices: median=%r, min=%r, max=%r", median, lo, hi)
         if (isinstance(median, (int, float)) and isinstance(lo, (int, float))
                 and isinstance(hi, (int, float))
                 and 10000 < lo <= median <= hi < 10_000_000):
@@ -408,6 +434,9 @@ def _extract_valuation_from_xhr(responses: list[dict[str, Any]]) -> dict[str, An
                 result["market_anchor_high"], occurrence,
             )
             return result
+        else:
+            logger.warning("Valuation XHR prices failed validation: lo=%r median=%r hi=%r", lo, median, hi)
+    logger.debug("_extract_valuation_from_xhr: no valuation endpoint found in %d responses", len(responses))
     return None
 
 
