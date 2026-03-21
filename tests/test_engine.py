@@ -20,6 +20,7 @@ from src.engine.mpp import calculate_mpp
 from src.engine.classifier import classify_deal, classify_deal_new
 from src.engine.battery_soh import calculate_soh_scenarios
 from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr
+from src.engine.pristips import _parse_pristips_innertext, _extract_market_activity_from_xhr
 from src.engine.underwriting import underwrite_deal
 from src.output.formatter import build_audit_record
 
@@ -424,6 +425,83 @@ class TestClassifier:
         result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, {"market_anchor_price": 400000})
         assert result["label"] == "KONTAKT"
         assert result["send_telegram"] is True
+
+
+# --- Pristips extraction ---
+
+class TestPristipsInnerText:
+    def test_ca_price_extraction(self):
+        """innerText 'ca. 234 000 kr' should give market_anchor_price=234000."""
+        text = """
+FINN Pristips
+Prisestimat for din bil
+ca. 234 000 kr
+Omtrent 60 % av lignende biler har en pris på mellom 223 000 og 246 000 kr.
+Selges vanligvis innen 45 dager
+12 biler inn siste 30 dager
+8 biler ut siste 30 dager
+"""
+        result = _parse_pristips_innertext(text)
+        assert result is not None
+        assert result["market_anchor_price"] == 234000
+        assert result["market_anchor_low"] == 223000
+        assert result["market_anchor_high"] == 246000
+
+    def test_mellom_range_without_ca(self):
+        """Extract range even when no 'ca.' price is present."""
+        text = """
+Prisestimat
+Omtrent 60 % av lignende biler har en pris på mellom 190 000 og 210 000 kr.
+"""
+        result = _parse_pristips_innertext(text)
+        assert result is not None
+        assert result["market_anchor_low"] == 190000
+        assert result["market_anchor_high"] == 210000
+
+    def test_days_to_sell(self):
+        text = """
+Prisestimat
+ca. 300 000 kr
+Selges vanligvis innen 30 dager
+"""
+        result = _parse_pristips_innertext(text)
+        assert result is not None
+        assert result["market_days_to_sell"] == 30
+
+    def test_empty_text_returns_none(self):
+        assert _parse_pristips_innertext("") is None
+        assert _parse_pristips_innertext("short") is None
+
+
+class TestPristipsXhrMarketActivity:
+    def test_extracts_activity_not_price(self):
+        """XHR extraction should get market activity but NOT price."""
+        responses = [{"url": "https://finn.no/api/test", "status": 200, "body": {
+            "value": 72000,  # This is mileage, NOT price - must be ignored
+            "daysToSell": 45,
+            "activeTotal": 120,
+            "last90Days": 85,
+            "last30days": 30,
+        }}]
+        result = _extract_market_activity_from_xhr(responses)
+        assert result is not None
+        assert "market_anchor_price" not in result
+        assert result["market_days_to_sell"] == 45
+        assert result["market_active_similar"] == 120
+        assert result["market_sold_90d"] == 85
+        assert result["market_new_last_30d"] == 30
+
+    def test_empty_responses(self):
+        assert _extract_market_activity_from_xhr([]) is None
+
+    def test_nested_activity(self):
+        responses = [{"url": "", "status": 200, "body": {
+            "data": {"daysToSell": 22, "activeTotal": 50}
+        }}]
+        result = _extract_market_activity_from_xhr(responses)
+        assert result is not None
+        assert result["market_days_to_sell"] == 22
+        assert result["market_active_similar"] == 50
 
 
 # --- Battery SOH ---

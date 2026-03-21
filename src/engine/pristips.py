@@ -41,9 +41,9 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
     """Open FINN Pristips with headless browser, fill in regnr + km, parse results.
 
     Three extraction strategies (in order):
-    1. Intercept XHR API responses (most reliable)
-    2. Parse innerText of rendered page (visible text)
-    3. Parse inline <script> JSON data (embedded state)
+    1. Parse innerText of rendered page for PRICE (most reliable)
+    2. Intercept XHR API responses for MARKET ACTIVITY only (days, active, sold)
+    3. Parse inline <script> JSON data (last resort for price)
     """
     if not COOKIE_FILE.exists():
         logger.warning("Ingen FINN cookies funnet. Kjoer: python scripts/get_finn_cookies.py")
@@ -220,35 +220,44 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
                 except Exception:
                     continue
 
-            # === EXTRACTION STRATEGY 1: XHR API responses ===
-            result = _extract_from_xhr(captured_responses)
-            if result and result.get("market_anchor_price"):
-                logger.info("Pristips extracted via XHR for %s: price=%s", regnr, result["market_anchor_price"])
-                browser.close()
-                return result
-
-            # === EXTRACTION STRATEGY 2: innerText parsing ===
+            # === STRATEGY 1: innerText for PRICE (most reliable) ===
             inner_text = page.evaluate("document.body?.innerText || ''")
             result = _parse_pristips_innertext(inner_text)
+
+            # === STRATEGY 2: XHR for MARKET ACTIVITY only (days, active, sold) ===
+            xhr_data = _extract_market_activity_from_xhr(captured_responses)
+            if xhr_data:
+                if result is None:
+                    result = {}
+                # Merge XHR market activity INTO result, but never overwrite price
+                for k, v in xhr_data.items():
+                    if v is not None and result.get(k) is None:
+                        result[k] = v
+
             if result and result.get("market_anchor_price"):
-                logger.info("Pristips extracted via innerText for %s: price=%s", regnr, result["market_anchor_price"])
+                logger.info("Pristips extracted for %s: price=%s (innerText)", regnr, result["market_anchor_price"])
                 browser.close()
                 return result
 
-            # === EXTRACTION STRATEGY 3: Inline script JSON ===
+            # === STRATEGY 3: Inline script JSON (last resort for price) ===
             html_content = page.content()
-            result = _parse_pristips_script_json(html_content)
-            if result and result.get("market_anchor_price"):
-                logger.info("Pristips extracted via script JSON for %s: price=%s", regnr, result["market_anchor_price"])
+            script_data = _parse_pristips_script_json(html_content)
+            if script_data and script_data.get("market_anchor_price"):
+                if result is None:
+                    result = {}
+                for k, v in script_data.items():
+                    if v is not None and result.get(k) is None:
+                        result[k] = v
+                logger.info("Pristips extracted for %s: price=%s (script JSON)", regnr, result.get("market_anchor_price"))
                 browser.close()
                 return result
 
-            # All strategies failed - save debug snapshot
-            _save_debug_snapshot(regnr, km, html_content, inner_text, captured_responses)
-            logger.warning("Pristips: alle extraherings-strategier feilet for %s. Debug lagret.", regnr)
+            # All strategies failed for price - save debug snapshot
+            _save_debug_snapshot(regnr, km, html_content if 'html_content' in dir() else "", inner_text, captured_responses)
+            logger.warning("Pristips: price extraction failed for %s. Debug saved.", regnr)
 
-            # Still try to return partial data from innerText (market data without price)
-            if result:
+            # Return partial data (market activity without price) if we have any
+            if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
                 browser.close()
                 return result
 
@@ -261,56 +270,19 @@ def _browser_extract(regnr: str, km: int) -> dict[str, Any] | None:
     return None
 
 
-def _extract_from_xhr(responses: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Extract price estimate from intercepted XHR API responses."""
+def _extract_market_activity_from_xhr(responses: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Extract ONLY market activity data from intercepted XHR API responses.
+
+    Deliberately does NOT extract price — innerText is the reliable source for that.
+    Only extracts: market_days_to_sell, market_active_similar, market_new_last_30d,
+    market_sold_last_30d, market_sold_90d.
+    """
     result: dict[str, Any] = {}
 
     for resp in responses:
         body = resp.get("body")
         if not body or not isinstance(body, dict):
             continue
-
-        # Look for price estimate in various response shapes
-        for price_key in [
-            "priceEstimate", "estimatedPrice", "price_estimate",
-            "pricePrediction", "predictedPrice", "marketPrice",
-            "valuationPrice", "value",
-        ]:
-            val = body.get(price_key)
-            if isinstance(val, (int, float)) and 10000 < val < 10000000:
-                result["market_anchor_price"] = int(val)
-                break
-            # Nested: {"priceEstimate": {"amount": 244000}}
-            if isinstance(val, dict):
-                amt = val.get("amount") or val.get("value") or val.get("price")
-                if isinstance(amt, (int, float)) and 10000 < amt < 10000000:
-                    result["market_anchor_price"] = int(amt)
-                    break
-
-        # Look for interval
-        for lo_key, hi_key in [
-            ("priceLow", "priceHigh"),
-            ("priceMin", "priceMax"),
-            ("lowEstimate", "highEstimate"),
-            ("intervalLow", "intervalHigh"),
-            ("confidenceIntervalLow", "confidenceIntervalHigh"),
-        ]:
-            lo = body.get(lo_key)
-            hi = body.get(hi_key)
-            if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
-                if 10000 < lo < hi < 10000000:
-                    result["market_anchor_low"] = int(lo)
-                    result["market_anchor_high"] = int(hi)
-                    break
-
-        # Look for priceRange dict
-        pr = body.get("priceRange") or body.get("priceInterval") or body.get("confidenceInterval")
-        if isinstance(pr, dict):
-            lo = pr.get("low") or pr.get("min") or pr.get("from")
-            hi = pr.get("high") or pr.get("max") or pr.get("to")
-            if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and 10000 < lo < hi:
-                result["market_anchor_low"] = int(lo)
-                result["market_anchor_high"] = int(hi)
 
         # Days to sell
         for days_key in ["daysToSell", "medianDaysToSell", "publishingTimeMedian", "estimatedDaysToSell"]:
@@ -319,21 +291,34 @@ def _extract_from_xhr(responses: list[dict[str, Any]]) -> dict[str, Any] | None:
                 result["market_days_to_sell"] = int(d)
                 break
 
-        # Active / sold counts
+        # Active counts
         at = body.get("activeTotal") or body.get("activeCount")
-        if isinstance(at, int):
+        if isinstance(at, int) and at >= 0:
             result["market_active_similar"] = at
-        sold = body.get("last90Days") or body.get("soldLast90Days") or body.get("last90days")
-        if isinstance(sold, int):
-            result["market_sold_90d"] = sold
 
-        # Recursively check nested structures
+        # New last 30 days
+        new_30 = body.get("last30days") or body.get("last30Days") or body.get("newLast30Days")
+        if isinstance(new_30, int) and new_30 >= 0:
+            result["market_new_last_30d"] = new_30
+
+        # Sold counts
+        sold_90 = body.get("last90Days") or body.get("soldLast90Days") or body.get("last90days")
+        if isinstance(sold_90, int) and sold_90 >= 0:
+            result["market_sold_90d"] = sold_90
+
+        sold_30 = body.get("soldLast30Days") or body.get("soldLast30days")
+        if isinstance(sold_30, int) and sold_30 >= 0:
+            result["market_sold_last_30d"] = sold_30
+
+        # Recursively check nested structures (for activity data only)
         for nested_key in ["result", "data", "valuation", "priceValuation", "estimation"]:
             nested = body.get(nested_key)
             if isinstance(nested, dict):
-                sub = _extract_from_xhr([{"body": nested, "url": "", "status": 200}])
-                if sub and sub.get("market_anchor_price"):
-                    result.update(sub)
+                sub = _extract_market_activity_from_xhr([{"body": nested, "url": "", "status": 200}])
+                if sub:
+                    for k, v in sub.items():
+                        if v is not None and result.get(k) is None:
+                            result[k] = v
 
     return result if result else None
 
