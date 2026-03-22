@@ -88,6 +88,10 @@ classifier:
 health:
   min_listings_pct_of_previous: 0.5
   max_listing_count_change_pct: 0.15
+pristips_health:
+  min_success_rate: 0.3
+  login_redirect_alert: true
+  max_consecutive_failures: 5
 screener:
   pass_threshold: 0.3
   under_median_threshold: 0.95

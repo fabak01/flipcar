@@ -402,19 +402,27 @@ class TestClassifier:
         assert "80%" in result["loan_recommendation"]
 
     def test_new_classifier_green(self):
-        listing = {"comp_result": {"transaction_median": 400000}}
+        listing = {}
         result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, {"market_anchor_price": 400000, "days_to_sell": 15})
         assert result["label"] == "KONTAKT"
         assert result["send_telegram"] is True
 
     def test_new_classifier_no_data(self):
+        """No Pristips → PRISTIPS_MISSING regardless of profit."""
         result = classify_deal_new(25000, 5000, {}, None, None, None)
-        assert result["label"] == "MONITOR"
+        assert result["label"] == "PRISTIPS_MISSING"
+        assert result["send_telegram"] is False
+
+    def test_new_classifier_comps_only_not_sufficient(self):
+        """Comps alone (no Pristips) → PRISTIPS_MISSING."""
+        listing = {"comp_result": {"transaction_median": 400000}}
+        result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, None)
+        assert result["label"] == "PRISTIPS_MISSING"
         assert result["send_telegram"] is False
 
     def test_new_classifier_no_ai_no_pitch(self):
-        """Even with good profit, don't pitch without AI analysis."""
-        listing = {"comp_result": {"transaction_median": 400000}}
+        """Even with good profit + Pristips, don't pitch without AI analysis."""
+        listing = {}
         result = classify_deal_new(25000, 5000, listing, None, None, {"market_anchor_price": 400000})
         assert result["label"] == "MANUELL VURDERING"
         assert result["send_telegram"] is False
@@ -702,8 +710,8 @@ class TestRegnrRegistry:
 # --- Underwriting ---
 
 class TestUnderwriting:
-    def test_underwrite_deal_with_comps(self, sample_listing, params):
-        # Add comp_result to listing
+    def test_underwrite_deal_comps_only_returns_pristips_missing(self, sample_listing, params):
+        """Comps alone are NOT sufficient — must return PRISTIPS_MISSING."""
         sample_listing["comp_result"] = {
             "tier": 1,
             "n_comps": 10,
@@ -720,10 +728,10 @@ class TestUnderwriting:
         sample_listing["rep_estimate"] = {"total_p50": 5000, "total_p90": 12000}
 
         deal = underwrite_deal(sample_listing, params)
-        assert "scenarios" in deal
-        assert "80pct" in deal["scenarios"]
-        assert "classification" in deal
-        assert deal["market"]["source"] == "internal_comps"
+        # No Pristips price → PRISTIPS_MISSING, not underwritten
+        assert deal["classification"]["label"] == "PRISTIPS_MISSING"
+        assert deal["market"]["source"] == "none"
+        assert deal["classification"]["send_telegram"] is False
 
     def test_underwrite_deal_pristips_primary(self, sample_listing, params):
         """Pristips price should be used as market anchor when available."""
@@ -749,14 +757,15 @@ class TestUnderwriting:
         assert "scenarios" in deal
         assert "80pct" in deal["scenarios"]
 
-    def test_underwrite_deal_no_comps(self, sample_listing, params):
+    def test_underwrite_deal_no_pristips_no_comps(self, sample_listing, params):
+        """No Pristips, no comps → PRISTIPS_MISSING."""
         sample_listing["comp_result"] = {"tier": None, "n_comps": 0, "transaction_median": None}
         sample_listing["pristips"] = None
         sample_listing["ai_analysis"] = None
 
         deal = underwrite_deal(sample_listing, params)
-        assert deal.get("error") == "Ingen markedsdata tilgjengelig"
-        assert deal["classification"]["label"] == "MONITOR"
+        assert deal["classification"]["label"] == "PRISTIPS_MISSING"
+        assert deal["classification"]["send_telegram"] is False
 
 
 class TestAuditNaming:

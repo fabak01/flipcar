@@ -31,17 +31,16 @@ def classify_deal_new(
     Requires either Pristips price or comps to underwrite.
     """
 
-    # No market data AND no AI = can't evaluate at all
+    # Production rule: Pristips price REQUIRED for any classification
     has_ai = ai and (ai.get("issues") or ai.get("positives"))
     has_pristips_price = pristips and pristips.get("market_anchor_price")
-    has_comps = listing.get("comp_result", {}).get("transaction_median") is not None
 
-    if not has_pristips_price and not has_comps:
+    if not has_pristips_price:
         return {
             "emoji": "⚪",
-            "label": "MONITOR",
+            "label": "PRISTIPS_MISSING",
             "send_telegram": False,
-            "reason": "Mangler prisestimat (ingen Pristips eller comps)",
+            "reason": "Mangler Pristips-pris (paakrevd for underwriting)",
             "loan_rec": "Ikke bruk laan",
         }
 

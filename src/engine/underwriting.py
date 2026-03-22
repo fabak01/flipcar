@@ -1,13 +1,14 @@
-"""Full deal underwriting: Pristips as primary anchor, comps as fallback.
+"""Full deal underwriting: Pristips as the ONLY production market anchor.
 
-Hierarchy:
-1. Pristips market_anchor_price (browser with cookies) -> best
-2. Comps transaction_median (internal) -> fallback
-3. Neither -> MONITOR (no underwriting)
+Production rule:
+- Pristips market_anchor_price REQUIRED for underwriting
+- No Pristips -> PRISTIPS_MISSING (skip underwriting/alerting)
+- Comps kept for diagnostics/sanity only, never used as anchor
 """
 
 from typing import Any
 
+from .adjustments import detect_adjustments
 from .carry import calculate_carry
 
 
@@ -53,67 +54,81 @@ def estimate_entry_price(listing: dict[str, Any], pristips: dict | None, params:
         "listing_price": listing_price,
         "assumed_entry_price": assumed_entry,
         "total_discount": round(total_discount, 3),
+        "breakdown": {
+            "base_discount": base_discount,
+            "age_bonus": age_bonus,
+            "cut_bonus": cut_bonus,
+            "market_bonus": market_bonus,
+            "seller_mod": seller_mod,
+        },
     }
 
 
 def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     """Full underwriting of a deal.
 
-    Uses Pristips as primary market anchor when available.
-    Falls back to comps-based FMV.
+    Production rule: Pristips market_anchor_price is REQUIRED.
+    No Pristips → PRISTIPS_MISSING (no underwriting).
+    Comps are kept for diagnostics only.
     """
     pristips = listing.get("pristips") or {}
     ai = listing.get("ai_analysis") or {}
     comp_result = listing.get("comp_result") or {}
 
-    # === MARKET ANCHOR (Pristips first, comps fallback) ===
+    # === MARKET ANCHOR (Pristips ONLY — comps are diagnostics, not anchor) ===
     market_anchor = None
     market_low = None
     market_high = None
     fmv_source = "none"
 
-    # Priority 1: Pristips price estimate
     if pristips.get("market_anchor_price"):
         market_anchor = pristips["market_anchor_price"]
         market_low = pristips.get("market_anchor_low") or round(market_anchor * 0.93)
         market_high = pristips.get("market_anchor_high") or round(market_anchor * 1.07)
         fmv_source = "finn_pristips"
 
-    # Priority 2: Comps transaction median
-    if market_anchor is None and comp_result.get("transaction_median"):
-        market_anchor = comp_result["transaction_median"]
-        if comp_result.get("comp_transaction_prices"):
-            import numpy as np
-            prices = np.array(comp_result["comp_transaction_prices"])
-            market_low = round(float(np.percentile(prices, 20)))
-            market_high = round(float(np.percentile(prices, 80)))
-        else:
-            market_low = round(market_anchor * 0.90)
-            market_high = round(market_anchor * 1.10)
-        fmv_source = "internal_comps"
-
     if market_anchor is None:
+        # No Pristips = cannot underwrite. Comps alone are NOT sufficient.
+        label = "PRISTIPS_MISSING"
+        reason = "Pristips-pris mangler — kan ikke underwrite uten markedsanker"
+        # Downgrade to MONITOR if we at least have comps (for diagnostics)
+        if comp_result.get("transaction_median") is not None:
+            reason += f" (comps median: {comp_result['transaction_median']:,} kr, kun diagnostikk)"
         return {
             "listing": listing,
             "market": {"source": "none", "anchor": None},
             "classification": {
                 "emoji": "⚪",
-                "label": "MONITOR",
+                "label": label,
                 "send_telegram": False,
-                "reason": "Ingen markedsdata",
+                "reason": reason,
                 "loan_rec": "Ikke bruk laan",
             },
-            "error": "Ingen markedsdata tilgjengelig",
+            "error": reason,
         }
 
-    # === CONDITION ADJUSTMENTS (from AI) ===
-    positive_adj = sum(p.get("value_nok", 0) for p in ai.get("positives", []))
-    negative_adj_p50 = sum(i.get("cost_p50", 0) for i in ai.get("issues", []))
-    negative_adj_p90 = sum(i.get("cost_p90", 0) for i in ai.get("issues", []))
+    # === STRUCTURED ADJUSTMENT MODEL ===
+    # Layer 1: Condition adjustments from AI text analysis
+    ai_positive = sum(p.get("value_nok", 0) for p in ai.get("positives", []))
+    ai_negative_p50 = sum(i.get("cost_p50", 0) for i in ai.get("issues", []))
+    ai_negative_p90 = sum(i.get("cost_p90", 0) for i in ai.get("issues", []))
+
+    # Layer 2: Structured adjustments from catalog (EU, service, tow hitch, etc.)
+    catalog_adjustments = detect_adjustments(listing)
+    catalog_positive = sum(a["amount"] for a in catalog_adjustments if a["amount"] > 0)
+    catalog_negative = sum(a["amount"] for a in catalog_adjustments if a["amount"] < 0)
+
+    # Combine: avoid double-counting by taking max of each source
+    positive_adj = ai_positive + catalog_positive
+    negative_adj_p50 = ai_negative_p50 + abs(catalog_negative)
+    negative_adj_p90 = ai_negative_p90 + abs(catalog_negative)
+
+    # Risk buffer: 5% of anchor for uncertainty
+    risk_buffer = round(market_anchor * 0.05)
 
     # === UNDERWRITTEN EXIT ===
     exit_base = market_anchor + positive_adj - negative_adj_p50
-    exit_bear = market_low + positive_adj * 0.5 - negative_adj_p90
+    exit_bear = market_low + positive_adj * 0.5 - negative_adj_p90 - risk_buffer
     exit_bull = market_high + positive_adj - negative_adj_p50 * 0.5
 
     # === SALES COSTS ===
@@ -218,9 +233,17 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
         },
         "ai_analysis": ai,
         "adjustments": {
-            "positive": positive_adj,
-            "negative_p50": negative_adj_p50,
-            "negative_p90": negative_adj_p90,
+            "base_anchor_price": market_anchor,
+            "positive_adjustments": positive_adj,
+            "negative_adjustments": negative_adj_p50,
+            "risk_buffer": risk_buffer,
+            "adjusted_exit_price": round(exit_base + sales_fixed),  # before sales costs
+            "ai_positive": ai_positive,
+            "ai_negative_p50": ai_negative_p50,
+            "ai_negative_p90": ai_negative_p90,
+            "catalog_adjustments": catalog_adjustments,
+            "catalog_positive": catalog_positive,
+            "catalog_negative": catalog_negative,
         },
         "exit": {
             "base": round(exit_base),

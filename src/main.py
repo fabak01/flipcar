@@ -172,7 +172,7 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
 
     logger.info("AI analysis for %d/%d listings", ai_count, len(all_listings))
 
-    # 6. Comps for all listings (used as fallback when Pristips has no price)
+    # 6. Comps for all listings (diagnostics/sanity check only — NOT used as anchor)
     for listing in all_listings:
         comp_result = find_comps(listing, all_listings, params)
         listing["comp_result"] = comp_result
@@ -182,20 +182,20 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
         rep = estimate_repairs(listing, params=params)
         listing["rep_estimate"] = rep
 
-    # 8. Full underwriting for ALL listings that have market data
-    #    (Pristips price OR comps — underwrite_deal handles the hierarchy)
+    # 8. Full underwriting for listings with Pristips price (REQUIRED anchor)
+    #    Comps alone are NOT sufficient for production underwriting.
     deals: list[dict[str, Any]] = []
     errors: list[str] = []
+    pristips_missing_count = 0
 
     for listing in all_listings:
         pristips = listing.get("pristips") or {}
-        comp_result = listing.get("comp_result", {})
 
-        # Need either Pristips price or comps median
+        # Production rule: Pristips price REQUIRED
         has_pristips_price = pristips.get("market_anchor_price") is not None
-        has_comps = comp_result.get("transaction_median") is not None
 
-        if not has_pristips_price and not has_comps:
+        if not has_pristips_price:
+            pristips_missing_count += 1
             continue
 
         try:
@@ -208,7 +208,27 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
     # 9. Sort by profit
     deals.sort(key=lambda d: d.get("scenarios", {}).get("80pct", {}).get("profit_base", -999999), reverse=True)
 
-    logger.info("Underwritten %d deals (%d errors)", len(deals), len(errors))
+    logger.info("Underwritten %d deals (%d errors, %d PRISTIPS_MISSING)", len(deals), len(errors), pristips_missing_count)
+
+    # 9b. Pristips health check — alert if too many listings missing Pristips
+    if len(all_listings) > 0:
+        pristips_rate = pristips_count / len(all_listings)
+        health_cfg = params.get("pristips_health", {})
+        min_rate = health_cfg.get("min_success_rate", 0.3)
+        if pristips_rate < min_rate:
+            cookie_steps = (
+                "Pristips-cookies trolig utloept.\n\n"
+                "RECOVERY:\n"
+                "1. cd ~/Projects/flipcar-clean\n"
+                "2. source .venv/bin/activate\n"
+                "3. python scripts/get_finn_cookies.py\n"
+                "4. Logg inn paa FINN i nettleseren\n"
+                "5. Test: python scripts/run_live_get_pristips.py EC60771 72123\n\n"
+                f"Pristips success rate: {pristips_rate:.0%} ({pristips_count}/{len(all_listings)})\n"
+                f"Listings uten Pristips: {pristips_missing_count}"
+            )
+            send_health_alert(cookie_steps)
+            logger.warning("Pristips success rate %.0f%% below threshold %.0f%%", pristips_rate * 100, min_rate * 100)
 
     # 10. Build audit records for output
     audit_records = []
@@ -295,8 +315,8 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
     log_scrape_run(len(all_listings), per_model, errors, health_status)
 
     logger.info(
-        "=== FlipCar Daily Run Complete === (%d scraped, %d underwritten, %d alerts, %d errors)",
-        len(all_listings), len(deals), alerts_sent, len(errors),
+        "=== FlipCar Daily Run Complete === (%d scraped, %d underwritten, %d alerts, %d errors, %d pristips_missing)",
+        len(all_listings), len(deals), alerts_sent, len(errors), pristips_missing_count,
     )
 
 
