@@ -65,6 +65,86 @@ def estimate_entry_price(listing: dict[str, Any], pristips: dict | None, params:
     }
 
 
+def _fmt_nok(n: int | float | None) -> str:
+    """Format NOK value with thousand separators."""
+    if n is None:
+        return "N/A"
+    return f"{int(round(n)):,}".replace(",", " ")
+
+
+def _build_explanation(
+    classification: dict, listing_price: int, market_anchor: int, mpp: int,
+    discount_needed_pct: float, profit_base: float, profit_bear: float,
+    ai: dict, pristips: dict, rep_p50: int,
+    positive_adj: int, negative_adj_p50: int, risk_buffer: int,
+) -> str:
+    """Build a human-readable explanation of why this deal got its classification."""
+    label = classification.get("label", "")
+    lines: list[str] = []
+
+    # Price context
+    lines.append(f"Annonsepris: {_fmt_nok(listing_price)} kr")
+    lines.append(f"Pristips markedsverdi: {_fmt_nok(market_anchor)} kr")
+
+    price_vs_market = ""
+    if listing_price and market_anchor:
+        ratio = listing_price / market_anchor
+        if ratio > 1.05:
+            price_vs_market = f"Priset {ratio - 1:.0%} OVER markedsverdi"
+        elif ratio < 0.95:
+            price_vs_market = f"Priset {1 - ratio:.0%} UNDER markedsverdi"
+        else:
+            price_vs_market = "Priset nær markedsverdi"
+        lines.append(price_vs_market)
+
+    # Adjustment summary
+    if positive_adj > 0 or negative_adj_p50 > 0:
+        lines.append(f"Justeringer: +{_fmt_nok(positive_adj)} / -{_fmt_nok(negative_adj_p50)} kr")
+    if risk_buffer > 0:
+        lines.append(f"Risikobuffer: -{_fmt_nok(risk_buffer)} kr")
+    if rep_p50 > 0:
+        lines.append(f"Rep-reserve: -{_fmt_nok(rep_p50)} kr")
+
+    # MPP context
+    lines.append(f"MPP (makspris): {_fmt_nok(mpp)} kr")
+    if discount_needed_pct > 0.01:
+        lines.append(f"Trenger {discount_needed_pct:.0%} rabatt fra annonsepris")
+    elif discount_needed_pct < -0.01:
+        lines.append(f"Allerede {abs(discount_needed_pct):.0%} under MPP — god pris")
+
+    # Profit context
+    lines.append(f"Forventet profitt (80% laan): {_fmt_nok(profit_base)} kr (base) / {_fmt_nok(profit_bear)} kr (bear)")
+
+    # Classification reasoning
+    lines.append("")
+    if label == "KONTAKT":
+        lines.append("KONTAKT: God profitt i base-scenario OG akseptabel nedside i bear.")
+        lines.append("Profitt base > 15 000 kr OG profitt bear > -5 000 kr.")
+    elif label == "KONTAKT (forsiktig)":
+        lines.append("KONTAKT (forsiktig): Profitt er OK men med mer risiko paa nedsiden.")
+        lines.append("Profitt base > 10 000 kr OG profitt bear > -15 000 kr.")
+    elif label == "MANUELL VURDERING":
+        reason = classification.get("reason", "")
+        if "mangler AI" in reason:
+            lines.append("MANUELL VURDERING: Profitt ser bra ut men mangler AI-analyse av annonsetekst.")
+            lines.append("Trenger manuell gjennomgang av tilstand og risiko.")
+        else:
+            lines.append("MANUELL VURDERING: Marginal profitt eller hoeyere risiko.")
+            lines.append("Profitt base > 5 000 kr OG profitt bear > -25 000 kr.")
+    elif label == "MONITOR":
+        lines.append("MONITOR: Ikke loennsom nok for aktiv oppfoelging.")
+        if not ai or (not ai.get("issues") and not ai.get("positives")):
+            lines.append("Mangler AI-analyse — kan ikke vurdere tilstand.")
+    elif label == "PASS":
+        lines.append("PASS: For lav profitt i base-scenario.")
+    elif label == "HARD PASS":
+        lines.append("HARD PASS: Stor tap-risiko i bear-scenario (< -30 000 kr).")
+    elif label == "PRISTIPS_MISSING":
+        lines.append("PRISTIPS_MISSING: Ingen markedsverdi tilgjengelig — kan ikke underwrite.")
+
+    return "\n".join(lines)
+
+
 def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     """Full underwriting of a deal.
 
@@ -95,6 +175,13 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
         # Downgrade to MONITOR if we at least have comps (for diagnostics)
         if comp_result.get("transaction_median") is not None:
             reason += f" (comps median: {comp_result['transaction_median']:,} kr, kun diagnostikk)"
+        explanation = (
+            f"Annonsepris: {_fmt_nok(listing.get('price_nok'))} kr\n"
+            f"Pristips markedsverdi: Ikke tilgjengelig\n\n"
+            f"PRISTIPS_MISSING: Ingen markedsverdi fra Pristips.\n"
+            f"{reason}\n"
+            f"Kan ikke beregne profitt, MPP eller klassifisering uten markedsanker."
+        )
         return {
             "listing": listing,
             "market": {"source": "none", "anchor": None},
@@ -105,6 +192,7 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
                 "reason": reason,
                 "loan_rec": "Ikke bruk laan",
             },
+            "explanation": explanation,
             "error": reason,
         }
 
@@ -226,6 +314,77 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
     profit_bear_80 = scenarios["80pct"]["profit_bear"]
     classification = classify_deal_new(profit_base_80, profit_bear_80, listing, ai, soh, pristips)
 
+    # === DISCOUNT NEEDED (interpretable) ===
+    listing_price = listing.get("price_nok") or 0
+    if listing_price > 0 and mpp > 0:
+        discount_needed_pct = (listing_price - mpp) / listing_price
+    else:
+        discount_needed_pct = 0.0
+
+    if discount_needed_pct > 0.01:
+        discount_display = f"Trenger {discount_needed_pct:.1%} lavere pris"
+    elif discount_needed_pct < -0.01:
+        discount_display = f"Allerede {abs(discount_needed_pct):.1%} under MPP"
+    else:
+        discount_display = "Omtrent paa MPP"
+
+    # Flag extreme negative discount as likely bad price parse
+    if discount_needed_pct < -0.50:
+        discount_display += " (ADVARSEL: mulig feil prisparsing)"
+
+    # === PER-DEAL BREAKDOWN (full transparency) ===
+    breakdown = {
+        "P_list": listing_price,
+        "V_anchor": market_anchor,
+        "anchor_source": fmv_source,
+        "anchor_confidence": pristips.get("anchor_confidence", "UNKNOWN"),
+        "valuation_mode": pristips.get("valuation_mode", "unknown"),
+        "positive_adjustments": {
+            "ai_positive": ai_positive,
+            "catalog_positive": catalog_positive,
+            "spec_positive": spec_positive,
+            "total": positive_adj,
+        },
+        "negative_adjustments": {
+            "ai_negative_p50": ai_negative_p50,
+            "ai_negative_p90": ai_negative_p90,
+            "catalog_negative": catalog_negative,
+            "spec_negative": spec_negative,
+            "total_p50": negative_adj_p50,
+            "total_p90": negative_adj_p90,
+        },
+        "repair_reserve": {"p50": rep_p50, "p90": rep_p90},
+        "risk_buffer": risk_buffer,
+        "adjusted_exit": {
+            "bull": round(exit_bull),
+            "base": round(exit_base),
+            "bear": round(exit_bear),
+        },
+        "carry_fees": {
+            "total_fees": round(total_fees),
+            "omregistrering": omreg,
+            "forsikring": round(forsikring),
+            "finn_annonse": finn_annonse,
+            "carry_80pct_base": scenarios["80pct"]["carry"],
+        },
+        "mpp": mpp,
+        "mpp_formula": {
+            "mpp_base": round(mpp_base),
+            "mpp_bear": round(mpp_bear),
+            "target_profit": target_profit,
+            "max_loss_bear": max_loss,
+        },
+        "discount_needed_pct": round(discount_needed_pct, 3),
+        "discount_display": discount_display,
+    }
+
+    # === PER-LISTING EXPLANATION ===
+    explanation = _build_explanation(
+        classification, listing_price, market_anchor, mpp, discount_needed_pct,
+        profit_base_80, profit_bear_80, ai, pristips, rep_p50,
+        positive_adj, negative_adj_p50, risk_buffer,
+    )
+
     return {
         "listing": listing,
         "market": {
@@ -266,12 +425,16 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
         "scenarios": scenarios,
         "mpp": mpp,
         "required_discount": round(required_discount, 3),
+        "discount_needed_pct": round(discount_needed_pct, 3),
+        "discount_display": discount_display,
         "soh": soh,
         "classification": classification,
         "comps": {
             "tier": comp_result.get("tier"),
             "n_comps": comp_result.get("n_comps", 0),
         },
+        "breakdown": breakdown,
+        "explanation": explanation,
         # Explicit top-level summary for transparency
         "summary": {
             "base_anchor_price": market_anchor,

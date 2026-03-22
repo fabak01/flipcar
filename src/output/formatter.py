@@ -148,9 +148,10 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
 
     columns = [
         "listing_id", "make", "model", "variant", "year", "km", "listing_price_nok",
-        "location", "classification", "profit_base_80", "profit_bear_80",
-        "roe_base_80", "mpp", "required_discount_to_mpp", "n_comps", "tier",
-        "days_p50", "loan_recommendation", "listing_url",
+        "price_parse_type", "location", "classification",
+        "profit_base_80", "profit_bear_80", "roe_base_80",
+        "mpp", "discount_needed_pct", "discount_display",
+        "n_comps", "tier", "days_p50", "loan_recommendation", "listing_url",
     ]
 
     path = Path(filepath)
@@ -168,16 +169,18 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
                 "year": r.get("year"),
                 "km": r.get("km"),
                 "listing_price_nok": r.get("listing_price_nok"),
+                "price_parse_type": r.get("price_parse_type"),
                 "location": r.get("location"),
                 "classification": r.get("classification"),
                 "profit_base_80": s80.get("profit_base"),
                 "profit_bear_80": s80.get("profit_bear"),
-                "roe_base_80": s80.get("roe_base"),
+                "roe_base_80": s80.get("roe_base_annual"),
                 "mpp": r.get("mpp"),
-                "required_discount_to_mpp": r.get("required_discount_to_mpp"),
+                "discount_needed_pct": r.get("discount_needed_pct"),
+                "discount_display": r.get("discount_display"),
                 "n_comps": r.get("comps", {}).get("n_comps"),
                 "tier": r.get("comps", {}).get("tier"),
-                "days_p50": r.get("days", {}).get("p50"),
+                "days_p50": r.get("days", {}).get("base"),
                 "loan_recommendation": r.get("loan_recommendation"),
                 "listing_url": r.get("listing_url"),
             })

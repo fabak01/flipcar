@@ -203,13 +203,48 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
         rep = estimate_repairs(listing, params=params)
         listing["rep_estimate"] = rep
 
+    # 7b. Price sanity gate — skip non-sale listings before underwriting
+    #     Do not underwrite monthly/leasing/teaser prices.
+    price_skipped = 0
+    price_anchor_mismatch = 0
+    for listing in all_listings:
+        ptype = listing.get("price_parse_type", "sale_price")
+        if ptype in ("monthly_price", "leasing_price"):
+            listing["skip_reason"] = listing.get("skip_reason") or f"{ptype}_detected"
+            price_skipped += 1
+            continue
+        if ptype == "unknown" and listing.get("skip_reason"):
+            price_skipped += 1
+            continue
+
+        # Hard sanity: if Pristips anchor exists and listing price is < 30% of anchor,
+        # flag as likely bad parse
+        pristips = listing.get("pristips") or {}
+        anchor = pristips.get("market_anchor_price")
+        list_price = listing.get("price_nok") or 0
+        if anchor and list_price > 0 and list_price < anchor * 0.30:
+            listing["skip_reason"] = "price_far_below_anchor"
+            listing["price_parse_type"] = "unknown"
+            listing["price_parse_confidence"] = "LOW"
+            price_anchor_mismatch += 1
+
+    if price_skipped > 0 or price_anchor_mismatch > 0:
+        logger.info("Price sanity: %d skipped (monthly/leasing), %d flagged (far below anchor)",
+                     price_skipped, price_anchor_mismatch)
+
     # 8. Full underwriting for listings with Pristips price (REQUIRED anchor)
     #    Comps alone are NOT sufficient for production underwriting.
     deals: list[dict[str, Any]] = []
     errors: list[str] = []
     pristips_missing_count = 0
+    price_skip_count = 0
 
     for listing in all_listings:
+        # Skip non-sale prices
+        if listing.get("skip_reason") and listing.get("price_parse_type") in ("monthly_price", "leasing_price", "unknown"):
+            price_skip_count += 1
+            continue
+
         pristips = listing.get("pristips") or {}
 
         # Production rule: Pristips price REQUIRED
@@ -260,7 +295,8 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
         deals.sort(key=lambda d: d.get("scenarios", {}).get("80pct", {}).get("profit_base", -999999), reverse=True)
         logger.info("Stage B: exact re-verified %d finalist candidates", exact_reverify_count)
 
-    logger.info("Underwritten %d deals (%d errors, %d PRISTIPS_MISSING)", len(deals), len(errors), pristips_missing_count)
+    logger.info("Underwritten %d deals (%d errors, %d PRISTIPS_MISSING, %d price_skipped)",
+                 len(deals), len(errors), pristips_missing_count, price_skip_count)
 
     # 9b. Pristips health check — alert if too many listings missing Pristips
     if len(all_listings) > 0:
@@ -300,6 +336,8 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
             "year": l.get("year"),
             "km": l.get("km"),
             "listing_price_nok": l.get("price_nok"),
+            "price_parse_type": l.get("price_parse_type"),
+            "price_parse_confidence": l.get("price_parse_confidence"),
             "location": l.get("location_city"),
             "dq_score": l.get("dq_score"),
             "seller_type": l.get("seller_type"),
@@ -327,9 +365,15 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
             "fees": deal.get("fees"),
             # Profit scenarios (cash, 60%, 80% LTV)
             "scenarios": deal.get("scenarios", {}),
-            # MPP
+            # MPP & discount
             "mpp": deal.get("mpp"),
             "required_discount": deal.get("required_discount"),
+            "discount_needed_pct": deal.get("discount_needed_pct"),
+            "discount_display": deal.get("discount_display"),
+            # Full per-deal breakdown (all formula inputs)
+            "breakdown": deal.get("breakdown", {}),
+            # Human-readable explanation
+            "explanation": deal.get("explanation", ""),
             # Diagnostics
             "comps": deal.get("comps", {}),
             "soh_analysis": deal.get("soh", {}),
@@ -347,24 +391,44 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
                 if c.get("send_telegram"):
                     alerts_sent += 1
     else:
-        # Print deals that WOULD be sent
+        # Print deals that WOULD be sent — full transparency per deal
         for deal in deals[:10]:
             c = deal.get("classification", {})
             l = deal.get("listing", {})
             s80 = deal.get("scenarios", {}).get("80pct", {})
             m = deal.get("market", {})
-            print(f"\n{'='*60}")
+            bd = deal.get("breakdown", {})
+            print(f"\n{'='*70}")
             print(f"{c.get('emoji','')} {c.get('label','')} | {l.get('make','')} {l.get('model','')} {l.get('variant','')} {l.get('year','')}")
-            print(f"  Pris: {l.get('price_nok', 0):,} kr | FMV: {m.get('anchor', 0):,} kr ({m.get('source', '?')})")
-            print(f"  Comps: {deal.get('comps', {}).get('n_comps', 0)} (Tier {deal.get('comps', {}).get('tier', '?')})")
-            print(f"  Pristips days: {m.get('days_to_sell', 'N/A')} | Active: {m.get('active_similar', 'N/A')} | Sold 90d: {m.get('sold_90d', 'N/A')}")
-            print(f"  Exit bull/base/bear: {deal.get('exit', {}).get('bull', 0):,} / {deal.get('exit', {}).get('base', 0):,} / {deal.get('exit', {}).get('bear', 0):,}")
-            print(f"  Profit 80% base: {s80.get('profit_base', 0):+,} | bear: {s80.get('profit_bear', 0):+,}")
-            print(f"  MPP: {deal.get('mpp', 0):,} | Discount needed: {deal.get('required_discount', 0):.1%}")
-            print(f"  Laan: {c.get('loan_rec', 'N/A')}")
+            print(f"  P_list:    {l.get('price_nok', 0):>10,} kr  (parse: {l.get('price_parse_type', '?')}/{l.get('price_parse_confidence', '?')})")
+            print(f"  V_anchor:  {m.get('anchor', 0):>10,} kr  ({m.get('source', '?')})")
+            # Adjustments
+            pos = bd.get("positive_adjustments", {})
+            neg = bd.get("negative_adjustments", {})
+            print(f"  Adj+:      {pos.get('total', 0):>+10,} kr  (AI:{pos.get('ai_positive',0):+,} cat:{pos.get('catalog_positive',0):+,} spec:{pos.get('spec_positive',0):+,})")
+            print(f"  Adj-:      {neg.get('total_p50', 0):>10,} kr  (AI:{neg.get('ai_negative_p50',0):,} cat:{abs(neg.get('catalog_negative',0)):,} spec:{abs(neg.get('spec_negative',0)):,})")
+            print(f"  Risk buf:  {bd.get('risk_buffer', 0):>10,} kr")
+            print(f"  Rep:       {bd.get('repair_reserve', {}).get('p50', 0):>10,} kr (p50)")
+            # Exit
+            ex = deal.get("exit", {})
+            print(f"  Exit:      bull {ex.get('bull', 0):>10,} / base {ex.get('base', 0):>10,} / bear {ex.get('bear', 0):>10,}")
+            # Carry/fees
+            cf = bd.get("carry_fees", {})
+            print(f"  Carry+fees:{cf.get('total_fees', 0) + cf.get('carry_80pct_base', 0):>10,} kr  (fees:{cf.get('total_fees',0):,} carry:{cf.get('carry_80pct_base',0):,})")
+            # MPP
+            print(f"  MPP:       {deal.get('mpp', 0):>10,} kr")
+            print(f"  Discount:  {deal.get('discount_display', 'N/A')}")
+            # Profit
+            print(f"  Profit 80%%: base {s80.get('profit_base', 0):>+10,} / bear {s80.get('profit_bear', 0):>+10,}")
+            print(f"  Laan:      {c.get('loan_rec', 'N/A')}")
+            # Explanation
+            expl = deal.get("explanation", "")
+            if expl:
+                print(f"  ---")
+                for line in expl.split("\n"):
+                    print(f"  {line}")
             if c.get("send_telegram"):
                 print(f"  >>> VILLE SENDT TELEGRAM <<<")
-                print(format_deal_message(deal)[:500])
 
     # 12. Output files
     write_jsonl(audit_records, str(PROJECT_ROOT / "deals.jsonl"))

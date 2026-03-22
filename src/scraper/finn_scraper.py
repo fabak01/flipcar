@@ -194,6 +194,55 @@ def _extract_listings_from_html(soup: BeautifulSoup) -> list[dict[str, Any]]:
     return listings
 
 
+def _classify_price(price_nok: int | None, listing_text: str, title: str) -> tuple[str, str, str | None]:
+    """Classify a parsed price as sale/monthly/leasing/unknown.
+
+    Returns (price_parse_type, price_parse_confidence, skip_reason).
+    """
+    if price_nok is None:
+        return "unknown", "NONE", "no_price"
+
+    text_lower = (listing_text + " " + title).lower()
+
+    # Leasing/monthly indicators in text
+    monthly_keywords = ["pr. mnd", "pr.mnd", "/mnd", "per mnd", "mnd.", "maaned",
+                        "pr mnd", "monthly", "per month"]
+    leasing_keywords = ["leasing", "privatleasing", "firmaleasing", "operasjonell leasing",
+                        "lease", "leasingpris"]
+
+    has_monthly_hint = any(kw in text_lower for kw in monthly_keywords)
+    has_leasing_hint = any(kw in text_lower for kw in leasing_keywords)
+
+    # Hard thresholds for Norwegian used car market
+    MIN_PLAUSIBLE_SALE_PRICE = 25_000  # Below this is almost certainly not a sale price
+    LOW_SALE_PRICE = 50_000  # Suspiciously low for any car we track
+
+    if price_nok < MIN_PLAUSIBLE_SALE_PRICE:
+        # Under 25k NOK — almost certainly monthly/leasing/teaser
+        if has_leasing_hint:
+            return "leasing_price", "HIGH", "leasing_price_detected"
+        if has_monthly_hint:
+            return "monthly_price", "HIGH", "monthly_price_detected"
+        return "monthly_price", "MEDIUM", "price_below_25k_likely_monthly"
+
+    if price_nok < LOW_SALE_PRICE:
+        # 25k–50k — suspicious, check text
+        if has_leasing_hint:
+            return "leasing_price", "HIGH", "leasing_price_detected"
+        if has_monthly_hint:
+            return "monthly_price", "HIGH", "monthly_price_detected"
+        return "unknown", "LOW", "price_below_50k_ambiguous"
+
+    # Normal price range — still check for leasing text
+    if has_leasing_hint and not any(kw in text_lower for kw in ["ikke leasing", "kjøpt ut av leasing", "ut av leasing"]):
+        return "leasing_price", "MEDIUM", "leasing_text_in_normal_price"
+    if has_monthly_hint:
+        # High price + monthly hint: the price might be the sale price with monthly payment mentioned
+        return "sale_price", "MEDIUM", None
+
+    return "sale_price", "HIGH", None
+
+
 def _normalize_listing(
     raw: dict[str, Any], make: str, model: str, aliases: dict[str, Any]
 ) -> Optional[dict[str, Any]]:
@@ -255,6 +304,11 @@ def _normalize_listing(
     fuel_type = raw.get("fuel", raw.get("fuel_type", ""))
     gearbox = raw.get("transmission", raw.get("gearbox", ""))
 
+    # Classify parsed price as sale/monthly/leasing/unknown
+    price_parse_type, price_parse_confidence, skip_reason = _classify_price(
+        price_nok, str(listing_text or ""), str(title)
+    )
+
     return {
         "listing_id": listing_id,
         "listing_url": listing_url,
@@ -266,6 +320,9 @@ def _normalize_listing(
         "year": year,
         "km": km,
         "price_nok": price_nok,
+        "price_parse_type": price_parse_type,
+        "price_parse_confidence": price_parse_confidence,
+        "skip_reason": skip_reason,
         "location_city": str(location),
         "fuel_type": str(fuel_type),
         "gearbox": str(gearbox),
@@ -344,7 +401,8 @@ def scrape_model(
         session.headers.update({"User-Agent": params["user_agent"]})
 
     from urllib.parse import quote_plus
-    base_url = f"https://www.finn.no/mobility/search/car?q={quote_plus(finn_query)}&sort=PUBLISHED_DESC"
+    # sales_form=1 filters to "Til salgs" (for sale) — excludes leasing/rental listings at source
+    base_url = f"https://www.finn.no/mobility/search/car?q={quote_plus(finn_query)}&sort=PUBLISHED_DESC&sales_form=1"
     all_listings: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     url = base_url

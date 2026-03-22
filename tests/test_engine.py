@@ -932,3 +932,164 @@ class TestAICacheTextHash:
 
         # Same text → same hash → cache valid
         assert cached_ai["_text_hash"] == text_hash
+
+
+# --- Price parse classification ---
+
+class TestPriceClassification:
+    def test_sale_price_normal(self):
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(350000, "Fin bil, velholdt", "Tesla Model 3 2021")
+        assert ptype == "sale_price"
+        assert conf == "HIGH"
+        assert skip is None
+
+    def test_monthly_price_low(self):
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(3990, "Fra 3990 pr. mnd inkl forsikring", "Tesla Model Y")
+        assert ptype == "monthly_price"
+        assert conf == "HIGH"
+        assert skip == "monthly_price_detected"
+
+    def test_leasing_keyword(self):
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(4500, "Privatleasing, gunstige vilkaar", "VW Golf")
+        assert ptype == "leasing_price"
+        assert conf == "HIGH"
+        assert skip == "leasing_price_detected"
+
+    def test_very_low_price_no_text_hint(self):
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(2990, "Fin bil", "BMW 3-serie")
+        assert ptype == "monthly_price"
+        assert conf == "MEDIUM"
+        assert "below_25k" in skip
+
+    def test_ambiguous_low_price(self):
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(39000, "Fin bil", "Nissan Leaf")
+        assert ptype == "unknown"
+        assert conf == "LOW"
+        assert "below_50k" in skip
+
+    def test_no_price(self):
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(None, "", "")
+        assert ptype == "unknown"
+        assert skip == "no_price"
+
+    def test_leasing_in_normal_price(self):
+        """High price but 'leasing' in text should flag as leasing."""
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(350000, "Privatleasing tilgjengelig", "Tesla Model 3")
+        assert ptype == "leasing_price"
+        assert conf == "MEDIUM"
+
+    def test_ex_leasing_not_flagged(self):
+        """'Kjøpt ut av leasing' should NOT be flagged as leasing."""
+        from src.scraper.finn_scraper import _classify_price
+        ptype, conf, skip = _classify_price(350000, "Kjøpt ut av leasing, alt service", "Tesla Model 3")
+        assert ptype == "sale_price"
+        assert skip is None
+
+
+# --- Underwriting breakdown and explanation ---
+
+class TestDealBreakdown:
+    def test_underwrite_has_breakdown(self, params):
+        listing = {
+            "listing_id": "999", "make": "Tesla", "model": "Model 3",
+            "variant": "long_range", "year": 2021, "km": 50000,
+            "price_nok": 350000, "fuel_type": "electric", "seller_type": "privat",
+            "listing_text": "Velholdt bil", "location_city": "Oslo",
+            "pristips": {"market_anchor_price": 340000, "market_anchor_low": 310000,
+                         "market_anchor_high": 370000, "anchor_confidence": "HIGH",
+                         "valuation_mode": "browser_xhr"},
+            "ai_analysis": {"issues": [{"name": "lakk", "cost_p50": 3000, "cost_p90": 5000}],
+                            "positives": [{"name": "servicebok", "value_nok": 5000}]},
+            "comp_result": {"tier": 1, "n_comps": 8},
+            "rep_estimate": {"total_p50": 3000, "total_p90": 5000},
+        }
+        deal = underwrite_deal(listing, params)
+
+        # Has breakdown
+        assert "breakdown" in deal
+        bd = deal["breakdown"]
+        assert bd["P_list"] == 350000
+        assert bd["V_anchor"] == 340000
+        assert bd["anchor_source"] == "finn_pristips"
+        assert "positive_adjustments" in bd
+        assert "negative_adjustments" in bd
+        assert "repair_reserve" in bd
+        assert "risk_buffer" in bd
+        assert "adjusted_exit" in bd
+        assert "carry_fees" in bd
+        assert "mpp" in bd
+        assert "mpp_formula" in bd
+        assert "discount_needed_pct" in bd
+        assert "discount_display" in bd
+
+    def test_underwrite_has_explanation(self, params):
+        listing = {
+            "listing_id": "998", "make": "Tesla", "model": "Model 3",
+            "variant": "long_range", "year": 2021, "km": 50000,
+            "price_nok": 350000, "fuel_type": "electric", "seller_type": "privat",
+            "listing_text": "Velholdt bil", "location_city": "Oslo",
+            "pristips": {"market_anchor_price": 340000, "market_anchor_low": 310000,
+                         "market_anchor_high": 370000},
+            "ai_analysis": {"issues": [], "positives": []},
+            "comp_result": {"tier": 1, "n_comps": 8},
+            "rep_estimate": {"total_p50": 0, "total_p90": 0},
+        }
+        deal = underwrite_deal(listing, params)
+        assert "explanation" in deal
+        assert "Annonsepris" in deal["explanation"]
+        assert "Pristips" in deal["explanation"]
+        assert deal["classification"]["label"] in deal["explanation"]
+
+    def test_pristips_missing_has_explanation(self, params):
+        listing = {
+            "listing_id": "997", "make": "Tesla", "model": "Model 3",
+            "variant": "long_range", "year": 2021, "km": 50000,
+            "price_nok": 350000, "fuel_type": "electric", "seller_type": "privat",
+            "listing_text": "Velholdt bil", "location_city": "Oslo",
+            "pristips": None,
+            "ai_analysis": None,
+            "comp_result": {},
+            "rep_estimate": {"total_p50": 0, "total_p90": 0},
+        }
+        deal = underwrite_deal(listing, params)
+        assert "explanation" in deal
+        assert "PRISTIPS_MISSING" in deal["explanation"]
+
+    def test_discount_display_needs_lower(self, params):
+        """When listing price > MPP, discount_display says 'trenger X% lavere'."""
+        listing = {
+            "listing_id": "996", "make": "Tesla", "model": "Model 3",
+            "variant": "long_range", "year": 2021, "km": 50000,
+            "price_nok": 500000, "fuel_type": "electric", "seller_type": "privat",
+            "listing_text": "Velholdt bil", "location_city": "Oslo",
+            "pristips": {"market_anchor_price": 340000, "market_anchor_low": 310000,
+                         "market_anchor_high": 370000},
+            "ai_analysis": {"issues": [], "positives": []},
+            "comp_result": {"tier": 1, "n_comps": 5},
+            "rep_estimate": {"total_p50": 0, "total_p90": 0},
+        }
+        deal = underwrite_deal(listing, params)
+        assert "lavere" in deal["discount_display"].lower() or "Trenger" in deal["discount_display"]
+
+    def test_discount_display_already_below(self, params):
+        """When listing price < MPP, discount_display says 'allerede under'."""
+        listing = {
+            "listing_id": "995", "make": "Tesla", "model": "Model 3",
+            "variant": "long_range", "year": 2021, "km": 50000,
+            "price_nok": 200000, "fuel_type": "electric", "seller_type": "privat",
+            "listing_text": "Velholdt bil", "location_city": "Oslo",
+            "pristips": {"market_anchor_price": 340000, "market_anchor_low": 310000,
+                         "market_anchor_high": 370000},
+            "ai_analysis": {"issues": [], "positives": []},
+            "comp_result": {"tier": 1, "n_comps": 5},
+            "rep_estimate": {"total_p50": 0, "total_p90": 0},
+        }
+        deal = underwrite_deal(listing, params)
+        assert "under MPP" in deal["discount_display"] or "ADVARSEL" in deal["discount_display"]

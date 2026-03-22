@@ -135,11 +135,15 @@ def format_deal_message(deal: dict[str, Any]) -> str:
     msg += f"{'Egenkapital:':12} {cash_eq:>10} {s60_eq:>10} {s80_eq:>10}\n"
     msg += "</pre>\n"
 
-    # MPP
+    # MPP + interpretable discount
     msg += f"\nMPP: <b>{fmt(deal.get('mpp'))} kr</b>"
-    rd = deal.get("required_discount", 0)
-    if rd and rd > 0:
-        msg += f" (trenger {rd:.1%} rabatt)"
+    discount_display = deal.get("discount_display", "")
+    if discount_display:
+        msg += f" ({discount_display})"
+    else:
+        rd = deal.get("required_discount", 0)
+        if rd and rd > 0:
+            msg += f" (trenger {rd:.1%} rabatt)"
     msg += "\n"
 
     # Entry
