@@ -1,4 +1,9 @@
-"""Output formatting: JSONL audit trail and CSV top-deals."""
+"""Output formatting: JSONL audit trail and CSV top-deals.
+
+NOTE: build_audit_record() is a LEGACY function used by old tests.
+The canonical production path builds audit records inline in main.py
+using the output from underwrite_deal().
+"""
 
 import csv
 import json
@@ -137,7 +142,7 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
     # Sort by base profit (80% loan scenario)
     sorted_records = sorted(
         records,
-        key=lambda r: r.get("scenarios", {}).get("80pct_loan", {}).get("profit_base", 0),
+        key=lambda r: r.get("scenarios", {}).get("80pct", {}).get("profit_base", 0),
         reverse=True,
     )
 
@@ -154,7 +159,7 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
         writer.writeheader()
 
         for r in sorted_records:
-            s80 = r.get("scenarios", {}).get("80pct_loan", {})
+            s80 = r.get("scenarios", {}).get("80pct", {})
             writer.writerow({
                 "listing_id": r.get("listing_id"),
                 "make": r.get("make"),

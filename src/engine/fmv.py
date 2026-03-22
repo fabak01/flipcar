@@ -1,4 +1,9 @@
-"""FMV (Fair Market Value) calculation from comp data."""
+"""LEGACY: FMV (Fair Market Value) calculation from comp data.
+
+This module is NOT used in the canonical production path.
+Production uses Pristips as the sole market anchor (see underwriting.py).
+Retained for backward compatibility with tests and diagnostics.
+"""
 
 import logging
 from typing import Any

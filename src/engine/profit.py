@@ -1,4 +1,9 @@
-"""Profit calculation across bull/base/bear scenarios and LTV levels."""
+"""LEGACY: Profit calculation across bull/base/bear scenarios and LTV levels.
+
+This module is NOT used in the canonical production path.
+Production profit calculation is inlined in underwriting.py underwrite_deal().
+Retained for backward compatibility with tests and diagnostics.
+"""
 
 from pathlib import Path
 from typing import Any

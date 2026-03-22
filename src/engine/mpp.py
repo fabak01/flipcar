@@ -1,4 +1,9 @@
-"""MPP (Makspris / Maximum Purchase Price) calculation."""
+"""LEGACY: MPP (Makspris / Maximum Purchase Price) calculation.
+
+This module is NOT used in the canonical production path.
+Production MPP is computed inline in underwriting.py underwrite_deal().
+Retained for backward compatibility with tests and diagnostics.
+"""
 
 import logging
 from pathlib import Path

@@ -272,10 +272,23 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
             "tier": comp_result.get("tier"),
             "n_comps": comp_result.get("n_comps", 0),
         },
+        # Explicit top-level summary for transparency
+        "summary": {
+            "base_anchor_price": market_anchor,
+            "adjusted_exit_price": round(exit_base + sales_fixed),
+            "target_entry_price": purchase_price,
+            "risk_buffer": risk_buffer,
+            "expected_gross_profit_80pct": scenarios["80pct"]["profit_base"] + rep_p50,
+            "expected_net_profit_80pct": scenarios["80pct"]["profit_base"],
+            "carry_cost_80pct": scenarios["80pct"]["carry"],
+            "financing_ltv_80pct": 0.8,
+            "equity_required_80pct": scenarios["80pct"]["equity_required"],
+        },
     }
 
 
-# Keep backward-compatible function for existing tests
+# LEGACY: backward-compatible function for old tests only.
+# NOT used in the canonical production path (underwrite_deal is canonical).
 def calculate_underwritten_exit(
     pristips: dict | None,
     ai_analysis: dict,

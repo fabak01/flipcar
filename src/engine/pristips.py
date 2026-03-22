@@ -275,50 +275,50 @@ def _browser_extract(regnr: str, km: int, headless: bool = True) -> dict[str, An
     3. innerText parsing for PRICE (fallback if valuation XHR missing)
     4. Inline script JSON for PRICE (last resort)
     """
-    print(f"[PRISTIPS] ENTER _browser_extract regnr={regnr} km={km} headless={headless}")
+    logger.debug(f"[PRISTIPS] ENTER _browser_extract regnr={regnr} km={km} headless={headless}")
 
     if not COOKIE_FILE.exists():
-        print(f"[PRISTIPS] _browser_extract: NO COOKIE FILE at {COOKIE_FILE}")
+        logger.debug(f"[PRISTIPS] _browser_extract: NO COOKIE FILE at {COOKIE_FILE}")
         logger.warning("Ingen FINN cookies funnet. Kjoer: python scripts/get_finn_cookies.py")
         return None
 
     cookies = json.loads(COOKIE_FILE.read_text())
-    print(f"[PRISTIPS] _browser_extract: loaded {len(cookies)} cookies")
+    logger.debug(f"[PRISTIPS] _browser_extract: loaded {len(cookies)} cookies")
 
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
     except ImportError:
-        print("[PRISTIPS] _browser_extract: Playwright NOT installed")
+        logger.debug("[PRISTIPS] _browser_extract: Playwright NOT installed")
         logger.warning("Playwright ikke installert. Kjoer: pip install playwright && playwright install chromium")
         return None
 
     # --- Run shared browser session ---
-    print(f"[PRISTIPS] _browser_extract: calling run_pristips_browser_session(headless={headless})")
+    logger.debug(f"[PRISTIPS] _browser_extract: calling run_pristips_browser_session(headless={headless})")
     session = run_pristips_browser_session(regnr, km, cookies, headless=headless)
 
     if session.get("error"):
-        print(f"[PRISTIPS] _browser_extract: SESSION ERROR: {session['error']}")
+        logger.debug(f"[PRISTIPS] _browser_extract: SESSION ERROR: {session['error']}")
         logger.error("Browser session error for %s: %s", regnr, session["error"])
         return None
 
     if session.get("login_required"):
-        print("[PRISTIPS] _browser_extract: LOGIN REQUIRED (cookies expired)")
+        logger.debug("[PRISTIPS] _browser_extract: LOGIN REQUIRED (cookies expired)")
         logger.warning("FINN cookies utloept. Kjoer: python scripts/get_finn_cookies.py")
         return None
 
     inner_text = session["inner_text"]
     captured_responses = session["captured_responses"]
 
-    print(f"[PRISTIPS] _browser_extract: session OK. final_url={session['final_url']}")
-    print(f"[PRISTIPS] _browser_extract: captured_responses={len(captured_responses)}, innerText_len={len(inner_text)}")
-    print(f"[PRISTIPS] _browser_extract: has 'ca.'={'ca.' in inner_text}, has 'mellom'={'mellom' in inner_text}")
+    logger.debug(f"[PRISTIPS] _browser_extract: session OK. final_url={session['final_url']}")
+    logger.debug(f"[PRISTIPS] _browser_extract: captured_responses={len(captured_responses)}, innerText_len={len(inner_text)}")
+    logger.debug(f"[PRISTIPS] _browser_extract: has 'ca.'={'ca.' in inner_text}, has 'mellom'={'mellom' in inner_text}")
 
     # Print ALL captured URLs
     for i, r in enumerate(captured_responses):
         url = r.get("url", "")
         is_valuation = "/api/ads/price/valuation" in url
         marker = " *** VALUATION ***" if is_valuation else ""
-        print(f"[PRISTIPS]   XHR #{i}: {url[:150]}{marker}")
+        logger.debug(f"[PRISTIPS]   XHR #{i}: {url[:150]}{marker}")
 
     # --- Conditionally save artifacts (controlled by pristips_debug.save_artifacts) ---
     _save_debug_if_enabled(regnr, km, session, extraction_failed=False)
@@ -326,13 +326,13 @@ def _browser_extract(regnr: str, km: int, headless: bool = True) -> dict[str, An
     result: dict[str, Any] = {}
 
     # === STRATEGY 1: XHR /api/ads/price/valuation for PRICE (authoritative) ===
-    print(f"[PRISTIPS] STRATEGY 1: _extract_valuation_from_xhr({len(captured_responses)} responses)")
+    logger.debug(f"[PRISTIPS] STRATEGY 1: _extract_valuation_from_xhr({len(captured_responses)} responses)")
     valuation = _extract_valuation_from_xhr(captured_responses)
     if valuation:
         result.update(valuation)
-        print(f"[PRISTIPS] STRATEGY 1 SUCCESS: price={result['market_anchor_price']}, low={result.get('market_anchor_low')}, high={result.get('market_anchor_high')}")
+        logger.debug(f"[PRISTIPS] STRATEGY 1 SUCCESS: price={result['market_anchor_price']}, low={result.get('market_anchor_low')}, high={result.get('market_anchor_high')}")
     else:
-        print(f"[PRISTIPS] STRATEGY 1 FAILED: no valuation endpoint matched")
+        logger.debug("[PRISTIPS] STRATEGY 1 FAILED: no valuation endpoint matched")
 
     # === STRATEGY 2: XHR other endpoints for MARKET ACTIVITY (days, active, sold) ===
     xhr_activity = _extract_market_activity_from_xhr(captured_responses)
@@ -340,26 +340,26 @@ def _browser_extract(regnr: str, km: int, headless: bool = True) -> dict[str, An
         for k, v in xhr_activity.items():
             if v is not None and result.get(k) is None:
                 result[k] = v
-        print(f"[PRISTIPS] STRATEGY 2: market activity keys={sorted(xhr_activity.keys())}")
+        logger.debug(f"[PRISTIPS] STRATEGY 2: market activity keys={sorted(xhr_activity.keys())}")
 
     # === STRATEGY 3: innerText for PRICE (fallback if valuation XHR missing) ===
     if not result.get("market_anchor_price"):
-        print("[PRISTIPS] STRATEGY 3: trying innerText fallback for price")
+        logger.debug("[PRISTIPS] STRATEGY 3: trying innerText fallback for price")
         innertext_data = _parse_pristips_innertext(inner_text)
         if innertext_data:
             for k, v in innertext_data.items():
                 if v is not None and result.get(k) is None:
                     result[k] = v
             if result.get("market_anchor_price"):
-                print(f"[PRISTIPS] STRATEGY 3 SUCCESS: price={result['market_anchor_price']}")
+                logger.debug(f"[PRISTIPS] STRATEGY 3 SUCCESS: price={result['market_anchor_price']}")
             else:
-                print(f"[PRISTIPS] STRATEGY 3: innerText parsed but no price. keys={sorted(k for k,v in innertext_data.items() if v is not None)}")
+                logger.debug(f"[PRISTIPS] STRATEGY 3: innerText parsed but no price. keys={sorted(k for k,v in innertext_data.items() if v is not None)}")
         else:
-            print("[PRISTIPS] STRATEGY 3: innerText parser returned None")
+            logger.debug("[PRISTIPS] STRATEGY 3: innerText parser returned None")
 
     # === STRATEGY 4: Inline script JSON for PRICE (last resort) ===
     if not result.get("market_anchor_price"):
-        print("[PRISTIPS] STRATEGY 4: trying script JSON fallback for price")
+        logger.debug("[PRISTIPS] STRATEGY 4: trying script JSON fallback for price")
         html_content = session["html"]
         script_data = _parse_pristips_script_json(html_content)
         if script_data:
@@ -367,7 +367,7 @@ def _browser_extract(regnr: str, km: int, headless: bool = True) -> dict[str, An
                 if v is not None and result.get(k) is None:
                     result[k] = v
             if result.get("market_anchor_price"):
-                print(f"[PRISTIPS] STRATEGY 4 SUCCESS: price={result.get('market_anchor_price')}")
+                logger.debug(f"[PRISTIPS] STRATEGY 4 SUCCESS: price={result.get('market_anchor_price')}")
 
     # Also merge any extra data from innerText (comp stats, days, etc.) even if we got price from XHR
     if result.get("market_anchor_price") and valuation:
@@ -378,20 +378,20 @@ def _browser_extract(regnr: str, km: int, headless: bool = True) -> dict[str, An
                     result[k] = v
 
     if result.get("market_anchor_price"):
-        print(f"[PRISTIPS] _browser_extract RETURNING: price={result['market_anchor_price']}, low={result.get('market_anchor_low')}, high={result.get('market_anchor_high')}")
+        logger.debug(f"[PRISTIPS] _browser_extract RETURNING: price={result['market_anchor_price']}, low={result.get('market_anchor_low')}, high={result.get('market_anchor_high')}")
         return result
 
-    print(f"[PRISTIPS] _browser_extract: ALL STRATEGIES FAILED. result_keys={sorted(k for k,v in result.items() if v is not None) if result else 'empty'}")
+    logger.debug(f"[PRISTIPS] _browser_extract: ALL STRATEGIES FAILED. result_keys={sorted(k for k,v in result.items() if v is not None) if result else 'empty'}")
 
     # Always save artifacts on failure regardless of toggle
     _save_debug_if_enabled(regnr, km, session, extraction_failed=True)
 
     # Return partial data (market activity without price) if we have any
     if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
-        print(f"[PRISTIPS] _browser_extract RETURNING partial (no price): keys={sorted(k for k,v in result.items() if v is not None)}")
+        logger.debug(f"[PRISTIPS] _browser_extract RETURNING partial (no price): keys={sorted(k for k,v in result.items() if v is not None)}")
         return result
 
-    print("[PRISTIPS] _browser_extract RETURNING None")
+    logger.debug("[PRISTIPS] _browser_extract RETURNING None")
     return None
 
 
@@ -401,24 +401,24 @@ def _extract_valuation_from_xhr(responses: list[dict[str, Any]]) -> dict[str, An
     This is the authoritative Pristips price source. The response shape is:
     {"prices": {"min": 222640.5625, "max": 245784.703125, "median": 234101.265625}, "occurrence": 9507}
     """
-    print(f"[PRISTIPS] _extract_valuation_from_xhr: scanning {len(responses)} responses")
+    logger.debug(f"[PRISTIPS] _extract_valuation_from_xhr: scanning {len(responses)} responses")
     for i, resp in enumerate(responses):
         url = resp.get("url", "")
         if "/api/ads/price/valuation" not in url:
             continue
-        print(f"[PRISTIPS]   MATCH at #{i}: {url[:150]}")
+        logger.debug(f"[PRISTIPS]   MATCH at #{i}: {url[:150]}")
         body = resp.get("body")
         if not body or not isinstance(body, dict):
-            print(f"[PRISTIPS]   body missing or not dict: type={type(body)}")
+            logger.debug(f"[PRISTIPS]   body missing or not dict: type={type(body)}")
             continue
         prices = body.get("prices")
         if not isinstance(prices, dict):
-            print(f"[PRISTIPS]   no 'prices' dict in body. keys={list(body.keys())}")
+            logger.debug(f"[PRISTIPS]   no 'prices' dict in body. keys={list(body.keys())}")
             continue
         median = prices.get("median")
         lo = prices.get("min")
         hi = prices.get("max")
-        print(f"[PRISTIPS]   raw prices: median={median}, min={lo}, max={hi}")
+        logger.debug(f"[PRISTIPS]   raw prices: median={median}, min={lo}, max={hi}")
         if (isinstance(median, (int, float)) and isinstance(lo, (int, float))
                 and isinstance(hi, (int, float))
                 and 10000 < lo <= median <= hi < 10_000_000):
@@ -430,11 +430,11 @@ def _extract_valuation_from_xhr(responses: list[dict[str, Any]]) -> dict[str, An
             occurrence = body.get("occurrence")
             if isinstance(occurrence, (int, float)) and occurrence > 0:
                 result["valuation_occurrence"] = int(occurrence)
-            print(f"[PRISTIPS]   EXTRACTED: price={result['market_anchor_price']}, low={result['market_anchor_low']}, high={result['market_anchor_high']}, occurrence={occurrence}")
+            logger.debug(f"[PRISTIPS]   EXTRACTED: price={result['market_anchor_price']}, low={result['market_anchor_low']}, high={result['market_anchor_high']}, occurrence={occurrence}")
             return result
         else:
-            print(f"[PRISTIPS]   VALIDATION FAILED: lo={lo} median={median} hi={hi}")
-    print(f"[PRISTIPS] _extract_valuation_from_xhr: NO valuation URL found in {len(responses)} responses")
+            logger.debug(f"[PRISTIPS]   VALIDATION FAILED: lo={lo} median={median} hi={hi}")
+    logger.debug(f"[PRISTIPS] _extract_valuation_from_xhr: NO valuation URL found in {len(responses)} responses")
     return None
 
 
@@ -939,6 +939,8 @@ def _api_fallback(regnr: str, km: int) -> dict[str, Any] | None:
         "market_sold_last_30d": (sold.get("last30days") or sold.get("last30Days")) if sold else None,
         "market_comps": [],
         "source": "finn_pristips_api_fallback",
+        "valuation_mode": "api_activity_only",
+        "anchor_confidence": "NONE",
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -963,7 +965,7 @@ def get_pristips(registration_number: str, km: int, headless: bool = True) -> di
     reg = registration_number.strip().upper().replace(" ", "")
     km_int = int(km)
 
-    print(f"[PRISTIPS] ENTER get_pristips regnr={reg} km={km_int}")
+    logger.debug(f"[PRISTIPS] ENTER get_pristips regnr={reg} km={km_int}")
 
     # --- Step 1: Browser extraction (same as run_live_get_pristips.py) ---
     browser_result = None
@@ -972,18 +974,18 @@ def get_pristips(registration_number: str, km: int, headless: bool = True) -> di
         try:
             from playwright.sync_api import sync_playwright  # noqa: F401
             cookies = json.loads(COOKIE_FILE.read_text())
-            print(f"[PRISTIPS] Loaded {len(cookies)} cookies, running browser session...")
+            logger.debug(f"[PRISTIPS] Loaded {len(cookies)} cookies, running browser session...")
 
             session = run_pristips_browser_session(reg, km_int, cookies, headless=headless)
 
             if session.get("error"):
-                print(f"[PRISTIPS] Browser session error: {session['error']}")
+                logger.debug(f"[PRISTIPS] Browser session error: {session['error']}")
             elif session.get("login_required"):
-                print("[PRISTIPS] Login required — cookies expired")
+                logger.debug("[PRISTIPS] Login required — cookies expired")
             else:
                 captured = session["captured_responses"]
                 inner_text = session["inner_text"]
-                print(f"[PRISTIPS] Session OK: {len(captured)} XHR, {len(inner_text)} chars innerText")
+                logger.debug(f"[PRISTIPS] Session OK: {len(captured)} XHR, {len(inner_text)} chars innerText")
 
                 # Conditionally save artifacts (toggle-controlled)
                 _save_debug_if_enabled(reg, km_int, session, extraction_failed=False)
@@ -994,7 +996,7 @@ def get_pristips(registration_number: str, km: int, headless: bool = True) -> di
                 valuation = _extract_valuation_from_xhr(captured)
                 if valuation:
                     result.update(valuation)
-                    print(f"[PRISTIPS] Valuation XHR: price={result['market_anchor_price']}")
+                    logger.debug(f"[PRISTIPS] Valuation XHR: price={result['market_anchor_price']}")
 
                 # Strategy 2: market activity from other XHR
                 activity = _extract_market_activity_from_xhr(captured)
@@ -1011,7 +1013,7 @@ def get_pristips(registration_number: str, km: int, headless: bool = True) -> di
                             if v is not None and result.get(k) is None:
                                 result[k] = v
                         if result.get("market_anchor_price"):
-                            print(f"[PRISTIPS] innerText fallback: price={result['market_anchor_price']}")
+                            logger.debug(f"[PRISTIPS] innerText fallback: price={result['market_anchor_price']}")
 
                 # Strategy 4: script JSON fallback for price
                 if not result.get("market_anchor_price"):
@@ -1034,22 +1036,26 @@ def get_pristips(registration_number: str, km: int, headless: bool = True) -> di
                     result["km"] = km_int
                     result["fetched_at"] = datetime.now(timezone.utc).isoformat()
                     result["source"] = "finn_pristips_browser"
-                    print(f"[PRISTIPS] RETURNING browser: price={result['market_anchor_price']}, low={result.get('market_anchor_low')}, high={result.get('market_anchor_high')}")
+                    result["valuation_mode"] = "browser_xhr" if valuation else "browser_innertext"
+                    result["anchor_confidence"] = "HIGH" if valuation else "MEDIUM"
+                    logger.debug(f"[PRISTIPS] RETURNING browser: price={result['market_anchor_price']}, low={result.get('market_anchor_low')}, high={result.get('market_anchor_high')}")
                     return result
 
                 # Partial browser data (no price but has activity)
                 if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
                     browser_result = result
+                    browser_result["valuation_mode"] = "browser_activity_only"
+                    browser_result["anchor_confidence"] = "NONE"
 
         except ImportError:
-            print("[PRISTIPS] Playwright not installed")
+            logger.debug("[PRISTIPS] Playwright not installed")
         except Exception as e:
-            print(f"[PRISTIPS] Browser exception: {e}")
+            logger.debug(f"[PRISTIPS] Browser exception: {e}")
     else:
-        print(f"[PRISTIPS] No cookies file at {COOKIE_FILE}")
+        logger.debug(f"[PRISTIPS] No cookies file at {COOKIE_FILE}")
 
     # --- Step 2: API fallback ---
-    print("[PRISTIPS] Browser got no price, trying API fallback...")
+    logger.debug("[PRISTIPS] Browser got no price, trying API fallback...")
     api_result = _api_fallback(reg, km_int)
     if api_result:
         # Merge partial browser data
@@ -1057,10 +1063,10 @@ def get_pristips(registration_number: str, km: int, headless: bool = True) -> di
             for k, v in browser_result.items():
                 if v is not None and api_result.get(k) is None:
                     api_result[k] = v
-        print(f"[PRISTIPS] RETURNING API fallback: price={api_result.get('market_anchor_price')}")
+        logger.debug(f"[PRISTIPS] RETURNING API fallback: price={api_result.get('market_anchor_price')}")
         return api_result
 
-    print("[PRISTIPS] RETURNING None")
+    logger.debug("[PRISTIPS] RETURNING None")
     return None
 
 
@@ -1070,20 +1076,24 @@ def get_pristips_cached(
     force_refresh: bool = False,
 ) -> dict[str, Any] | None:
     """Cache wrapper: reuse cached result within 7 days."""
-    print(f"[PRISTIPS] ENTER get_pristips_cached regnr={registration_number} km={km} force_refresh={force_refresh}")
+    logger.debug(f"[PRISTIPS] ENTER get_pristips_cached regnr={registration_number} km={km} force_refresh={force_refresh}")
     if not force_refresh:
         cached = get_cached_pristips(registration_number, int(km), max_age_days=7)
         if cached:
-            print(f"[PRISTIPS] get_pristips_cached: CACHE HIT, price={cached.get('market_anchor_price')}")
-            cached["source"] = "cache"
+            logger.debug(f"[PRISTIPS] get_pristips_cached: CACHE HIT, price={cached.get('market_anchor_price')}")
+            cached["source"] = "finn_pristips_cache"
+            if "valuation_mode" not in cached:
+                cached["valuation_mode"] = "cache"
+            if "anchor_confidence" not in cached:
+                cached["anchor_confidence"] = "HIGH" if cached.get("market_anchor_price") else "NONE"
             return cached
-        print("[PRISTIPS] get_pristips_cached: cache miss")
+        logger.debug("[PRISTIPS] get_pristips_cached: cache miss")
 
     result = get_pristips(registration_number, int(km))
     if result:
         upsert_pristips_cache(registration_number, int(km), result)
 
-    print(f"[PRISTIPS] get_pristips_cached RETURNING: price={result.get('market_anchor_price') if result else 'None'}")
+    logger.debug(f"[PRISTIPS] get_pristips_cached RETURNING: price={result.get('market_anchor_price') if result else 'None'}")
     return result
 
 

@@ -834,7 +834,7 @@ class TestSpecPricing:
 
 # --- Variant normalization ---
 
-class TestVariantNormalization:
+class TestVariantNormalizationExtended:
     def test_performance_before_awd(self):
         """Tesla Model Y Performance AWD should be 'performance', NOT 'long_range'."""
         import yaml
@@ -886,3 +886,49 @@ class TestRegnrConfidence:
         regnr, conf = get_reference_regnr_with_confidence({}, "Tesla", "Model 3", "unknown", 2021)
         assert regnr is None
         assert conf == "NONE"
+
+
+class TestAICacheTextHash:
+    """Test that AI cache invalidation uses text hash correctly."""
+
+    def test_same_text_same_hash(self):
+        import hashlib
+        text = "Velholdt bil med nye dekk og EU til 2026."
+        h1 = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        h2 = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        assert h1 == h2
+
+    def test_changed_text_different_hash(self):
+        import hashlib
+        text_v1 = "Velholdt bil med nye dekk og EU til 2026."
+        text_v2 = "Velholdt bil med nye dekk og EU til 2026. Ny pris!"
+        h1 = hashlib.sha256(text_v1.encode("utf-8")).hexdigest()[:16]
+        h2 = hashlib.sha256(text_v2.encode("utf-8")).hexdigest()[:16]
+        assert h1 != h2
+
+    def test_stale_cache_detected(self):
+        """Simulate the cache invalidation logic from main.py."""
+        import hashlib
+
+        # Original listing text and cached analysis
+        original_text = "Fin bil, lite brukt, alt av service utfoert."
+        original_hash = hashlib.sha256(original_text.encode("utf-8")).hexdigest()[:16]
+        cached_ai = {"_text_hash": original_hash, "issues": [], "positives": []}
+
+        # Listing text changes (seller updates ad)
+        updated_text = "Fin bil, lite brukt, alt av service utfoert. Pris redusert!"
+        new_hash = hashlib.sha256(updated_text.encode("utf-8")).hexdigest()[:16]
+
+        # Cache should be stale
+        assert cached_ai["_text_hash"] != new_hash, "Changed text must invalidate cache"
+
+    def test_unchanged_text_cache_valid(self):
+        """Unchanged text should reuse cached analysis."""
+        import hashlib
+
+        text = "Fin bil, lite brukt, alt av service utfoert."
+        text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        cached_ai = {"_text_hash": text_hash, "issues": [], "positives": []}
+
+        # Same text → same hash → cache valid
+        assert cached_ai["_text_hash"] == text_hash

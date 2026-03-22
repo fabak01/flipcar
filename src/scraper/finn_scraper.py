@@ -262,6 +262,7 @@ def _normalize_listing(
         "model": model,
         "variant": variant,
         "variant_uncertainty": uncertainty,
+        "variant_match_confidence": "HIGH" if uncertainty == 0.0 else ("LOW" if uncertainty >= 0.10 else "MEDIUM"),
         "year": year,
         "km": km,
         "price_nok": price_nok,

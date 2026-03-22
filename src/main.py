@@ -151,7 +151,12 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
     logger.info("Pristips fetched for %d/%d listings", pristips_count, len(all_listings))
 
     # 5. AI analysis for all listings with text
+    #    Cache keyed by listing_id + text hash to invalidate on text changes.
+    import hashlib
+
     ai_count = 0
+    ai_cache_hits = 0
+    ai_cache_stale = 0
     for listing in all_listings:
         listing_id = listing.get("listing_id", "")
         listing_text = listing.get("listing_text", "")
@@ -160,11 +165,20 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
             listing["ai_analysis"] = None
             continue
 
+        # Deterministic text hash for cache invalidation
+        text_hash = hashlib.sha256(listing_text.encode("utf-8")).hexdigest()[:16]
+
         cached_ai = get_cached_text_analysis(listing_id)
         if cached_ai:
-            listing["ai_analysis"] = cached_ai
-            ai_count += 1
-            continue
+            cached_hash = cached_ai.get("_text_hash", "")
+            if cached_hash == text_hash:
+                listing["ai_analysis"] = cached_ai
+                ai_count += 1
+                ai_cache_hits += 1
+                continue
+            else:
+                ai_cache_stale += 1
+                logger.debug("Stale AI cache for %s (text changed)", listing_id)
 
         ai = analyze_listing_text(
             listing_text,
@@ -172,11 +186,12 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
             listing.get("model", ""),
             int(listing.get("year") or 0),
         )
+        ai["_text_hash"] = text_hash
         listing["ai_analysis"] = ai
         upsert_text_analysis_cache(listing_id, ai)
         ai_count += 1
 
-    logger.info("AI analysis for %d/%d listings", ai_count, len(all_listings))
+    logger.info("AI analysis for %d/%d listings (cache hits: %d, stale invalidated: %d)", ai_count, len(all_listings), ai_cache_hits, ai_cache_stale)
 
     # 6. Comps for all listings (diagnostics/sanity check only — NOT used as anchor)
     for listing in all_listings:
@@ -214,6 +229,37 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
     # 9. Sort by profit
     deals.sort(key=lambda d: d.get("scenarios", {}).get("80pct", {}).get("profit_base", -999999), reverse=True)
 
+    # 9a. Stage B: Exact re-verification for final candidates
+    #     If a deal would trigger an alert (KONTAKT/KONTAKT forsiktig) AND was valued
+    #     using a batch/reference regnr, re-verify with the listing's own regnr if available.
+    exact_reverify_count = 0
+    for deal in deals:
+        c = deal.get("classification", {})
+        l = deal.get("listing", {})
+        if not c.get("send_telegram"):
+            continue  # Only re-verify alert candidates
+        if l.get("regnr_source") == "listing":
+            continue  # Already used own regnr
+        own_regnr = l.get("registration_number")
+        own_km = l.get("km") or 0
+        if own_regnr and own_km > 0:
+            exact_pristips = get_pristips_cached(own_regnr, int(own_km), force_refresh=True)
+            if exact_pristips and exact_pristips.get("market_anchor_price"):
+                l["pristips"] = exact_pristips
+                l["regnr_source"] = "listing_exact_reverify"
+                l["regnr_confidence"] = "HIGH"
+                exact_reverify_count += 1
+                # Re-underwrite with exact data
+                try:
+                    deal.update(underwrite_deal(l, params))
+                except Exception as e:
+                    logger.error("Exact re-verify failed for %s: %s", l.get("listing_id"), e)
+
+    if exact_reverify_count > 0:
+        # Re-sort after re-verification
+        deals.sort(key=lambda d: d.get("scenarios", {}).get("80pct", {}).get("profit_base", -999999), reverse=True)
+        logger.info("Stage B: exact re-verified %d finalist candidates", exact_reverify_count)
+
     logger.info("Underwritten %d deals (%d errors, %d PRISTIPS_MISSING)", len(deals), len(errors), pristips_missing_count)
 
     # 9b. Pristips health check — alert if too many listings missing Pristips
@@ -241,7 +287,11 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
     for deal in deals:
         l = deal.get("listing", {})
         s80 = deal.get("scenarios", {}).get("80pct", {})
+        market = deal.get("market", {})
+        entry = deal.get("entry", {})
+        adj = deal.get("adjustments", {})
         record = {
+            # Listing metadata
             "listing_id": l.get("listing_id"),
             "listing_url": l.get("listing_url"),
             "make": l.get("make"),
@@ -250,35 +300,40 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
             "year": l.get("year"),
             "km": l.get("km"),
             "listing_price_nok": l.get("price_nok"),
-            "price_nok": l.get("price_nok"),
             "location": l.get("location_city"),
             "dq_score": l.get("dq_score"),
+            "seller_type": l.get("seller_type"),
+            "regnr_source": l.get("regnr_source"),
+            "regnr_confidence": l.get("regnr_confidence"),
+            # Classification
             "classification": deal.get("classification", {}).get("label", ""),
+            "classification_reason": deal.get("classification", {}).get("reason", ""),
             "loan_recommendation": deal.get("classification", {}).get("loan_rec", ""),
-            "comps": deal.get("comps", {}),
-            "fmv": {
-                "adjusted_p10": deal.get("exit", {}).get("bear"),
-                "adjusted_p50": deal.get("market", {}).get("anchor"),
-                "adjusted_p90": deal.get("exit", {}).get("bull"),
-            },
+            # Market anchor (Pristips)
+            "market": market,
+            # Adjustments (transparent breakdown)
+            "adjustments": adj,
+            # Exit values
             "exit": deal.get("exit", {}),
-            "entry": deal.get("entry", {}),
+            # Entry values (separate from exit)
+            "entry": entry,
+            "assumed_entry_price": entry.get("assumed_entry_price"),
+            "assumed_negotiation_discount": entry.get("total_discount"),
+            # Repair costs
             "rep": deal.get("rep", {}),
+            # Days to sell
             "days": deal.get("days", {}),
+            # Fees
             "fees": deal.get("fees"),
-            "scenarios": {
-                "cash": deal.get("scenarios", {}).get("cash", {}),
-                "60pct_loan": deal.get("scenarios", {}).get("60pct", {}),
-                "80pct_loan": deal.get("scenarios", {}).get("80pct", {}),
-            },
-            "assumed_entry_price": deal.get("entry", {}).get("assumed_entry_price"),
-            "assumed_negotiation_discount": deal.get("entry", {}).get("total_discount"),
+            # Profit scenarios (cash, 60%, 80% LTV)
+            "scenarios": deal.get("scenarios", {}),
+            # MPP
             "mpp": deal.get("mpp"),
             "required_discount": deal.get("required_discount"),
+            # Diagnostics
+            "comps": deal.get("comps", {}),
             "soh_analysis": deal.get("soh", {}),
-            "pristips": deal.get("market", {}),
             "ai_analysis": deal.get("ai_analysis", {}),
-            "flags": [],
         }
         audit_records.append(record)
         upsert_analysis(record)
