@@ -1,4 +1,4 @@
-"""Comp selection and matching for FMV calculation (fallback when Pristips unavailable)."""
+"""Comp selection and matching for FMV calculation (diagnostics only — not production anchor)."""
 
 import logging
 from typing import Any
@@ -11,16 +11,31 @@ logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
 
-# Stricter tier config
-TIER_CONFIG = {
+# Defaults — overridden by params.yaml["comps"] when loaded
+_DEFAULT_TIER_CONFIG = {
     1: {"year_delta": 1, "km_delta_pct": 0.20, "min_count": 8},
     2: {"year_delta": 1, "km_delta_pct": 0.30, "min_count": 8},
     3: {"year_delta": 2, "km_delta_pct": 0.40, "min_count": 5},
 }
 
-MAX_KM_DIFF_ABSOLUTE = 50000
-MAX_PRICE_RATIO = 2.5
-MIN_PRICE_RATIO = 0.4
+_DEFAULT_MAX_KM_DIFF = 50000
+_DEFAULT_MAX_PRICE_RATIO = 2.5
+_DEFAULT_MIN_PRICE_RATIO = 0.4
+
+
+def _get_tier_config(params: dict[str, Any]) -> dict:
+    """Build tier config from params.yaml, falling back to defaults."""
+    comps_cfg = params.get("comps", {})
+    tier_config = {}
+    for tier_num, defaults in _DEFAULT_TIER_CONFIG.items():
+        yaml_key = f"tier{tier_num}"
+        yaml_tier = comps_cfg.get(yaml_key, {})
+        tier_config[tier_num] = {
+            "year_delta": yaml_tier.get("year_delta", defaults["year_delta"]),
+            "km_delta_pct": yaml_tier.get("km_delta_pct", defaults["km_delta_pct"]),
+            "min_count": yaml_tier.get("min_count", defaults["min_count"]),
+        }
+    return tier_config
 
 
 def _load_params() -> dict[str, Any]:
@@ -42,6 +57,11 @@ def find_comps(
         params = _load_params()
 
     tx_discount = params["transaction_discount"]
+    comps_cfg = params.get("comps", {})
+    tier_config = _get_tier_config(params)
+    max_km_diff = comps_cfg.get("max_km_diff_absolute", _DEFAULT_MAX_KM_DIFF)
+    max_price_ratio = comps_cfg.get("max_price_ratio", _DEFAULT_MAX_PRICE_RATIO)
+    min_price_ratio = comps_cfg.get("min_price_ratio", _DEFAULT_MIN_PRICE_RATIO)
 
     target_id = target.get("listing_id")
     target_make = target.get("make", "")
@@ -76,16 +96,16 @@ def find_comps(
         # Price sanity: exclude extreme outliers
         if target_price and l["price_nok"] > 0:
             ratio = l["price_nok"] / target_price
-            if ratio > MAX_PRICE_RATIO or ratio < MIN_PRICE_RATIO:
+            if ratio > max_price_ratio or ratio < min_price_ratio:
                 continue
         # Absolute km difference cap
-        if abs(l["km"] - target_km) > MAX_KM_DIFF_ABSOLUTE:
+        if abs(l["km"] - target_km) > max_km_diff:
             continue
         same_model.append(l)
 
     # Try tiers in order
     for tier_num in [1, 2, 3]:
-        tier_cfg = TIER_CONFIG[tier_num]
+        tier_cfg = tier_config[tier_num]
         year_delta = tier_cfg["year_delta"]
         km_delta_pct = tier_cfg["km_delta_pct"]
         min_count = tier_cfg["min_count"]
@@ -107,7 +127,7 @@ def find_comps(
             return _build_comp_result(comps, tier_num, tx_discount)
 
     # Insufficient comps - use whatever we have from tier 3
-    tier3 = TIER_CONFIG[3]
+    tier3 = tier_config[3]
     comps = [
         l for l in same_model
         if abs(l["year"] - target_year) <= tier3["year_delta"]

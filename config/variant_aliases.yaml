@@ -1,74 +1,82 @@
 tesla_model_3:
-  long_range: ["long range", "lr", "langrekkevidde", "long range awd"]
-  performance: ["performance", "perf", "model 3 performance"]
-  standard_range: ["standard range", "sr", "rwd", "standard range plus", "sr+"]
+  # Order matters: check specific variants BEFORE generic ones
+  performance: ["model 3 performance", "performance"]
+  long_range: ["long range awd", "long range", "lr", "langrekkevidde"]
+  standard_range: ["standard range plus", "sr+", "standard range", "sr", "rwd"]
 
 tesla_model_y:
-  long_range: ["long range", "lr", "langrekkevidde", "long range awd", "awd"]
-  performance: ["performance", "perf", "model y performance"]
+  # "performance" must match BEFORE "awd"/"long range"
+  performance: ["model y performance", "performance"]
+  long_range: ["long range awd", "long range", "lr", "langrekkevidde"]
   standard_range: ["standard range", "sr", "rwd", "bakhjulsdrift"]
+  # NOTE: removed bare "awd" — too ambiguous, matches "performance awd" incorrectly
 
 volkswagen_golf:
-  r: ["golf r", "r-line", "r line", "4motion r"]
-  gti: ["gti", "golf gti", "clubsport"]
+  # "golf r" must be checked before bare "r" patterns; "r-line" is NOT same as "R"
+  gti: ["golf gti", "gti", "clubsport"]
   gte: ["gte", "plug-in hybrid", "plugin hybrid"]
-  tsi: ["tsi", "1.0 tsi", "1.2 tsi", "1.4 tsi", "1.5 tsi", "2.0 tsi"]
-  tdi: ["tdi", "1.6 tdi", "2.0 tdi"]
-  etsi: ["etsi", "e-tsi", "mild hybrid"]
-  e_golf: ["e-golf", "egolf", "electric"]
+  r: ["golf r 4motion", "golf r "]
+  # NOTE: "golf r " (with trailing space) avoids matching "golf r-line".
+  # R-Line is a trim package, not the Golf R.
+  tsi: ["1.5 tsi", "1.4 tsi", "1.2 tsi", "1.0 tsi", "2.0 tsi", "tsi"]
+  tdi: ["2.0 tdi", "1.6 tdi", "tdi"]
+  etsi: ["e-tsi", "etsi", "mild hybrid"]
+  e_golf: ["e-golf", "egolf"]
 
 skoda_octavia:
-  rs: ["rs", "vrs", "octavia rs"]
+  rs: ["octavia rs", "rs", "vrs"]
   scout: ["scout", "4x4 scout"]
-  style: ["style", "style business"]
+  iv: ["iV", "iv", "plug-in", "phev"]
+  style: ["style business", "style"]
   ambition: ["ambition"]
   elegance: ["elegance"]
-  tsi: ["tsi", "1.4 tsi", "1.5 tsi", "2.0 tsi"]
-  tdi: ["tdi", "2.0 tdi", "1.6 tdi"]
-  iv: ["iv", "iV", "plug-in", "phev"]
+  tsi: ["1.5 tsi", "1.4 tsi", "2.0 tsi", "tsi"]
+  tdi: ["2.0 tdi", "1.6 tdi", "tdi"]
 
 toyota_yaris:
-  hybrid: ["hybrid", "yaris hybrid", "1.5 hybrid"]
-  gr: ["gr", "gr sport", "gr-s"]
+  gr: ["gr sport", "gr-s", "gr yaris"]
+  hybrid: ["yaris hybrid", "1.5 hybrid", "hybrid"]
   active: ["active"]
   style: ["style"]
 
 toyota_corolla:
-  hybrid: ["hybrid", "1.8 hybrid", "2.0 hybrid"]
   touring_sports: ["touring sports", "stasjonsvogn"]
+  hybrid: ["2.0 hybrid", "1.8 hybrid", "hybrid"]
   active: ["active"]
   style: ["style"]
   executive: ["executive"]
 
 mitsubishi_outlander_phev:
-  instyle: ["instyle", "instyle+", "instyle pluss"]
+  instyle: ["instyle+", "instyle pluss", "instyle"]
   intense: ["intense"]
   invite: ["invite"]
   phev: ["phev", "plug-in", "plugin hybrid"]
 
 bmw_3serie:
-  "318i": ["318i", "318 i"]
-  "320i": ["320i", "320 i"]
+  # Specific engine codes checked first (no risk of overlap)
+  "330e": ["330e", "330 e"]
+  "330d": ["330d", "330 d"]
   "330i": ["330i", "330 i"]
   "320d": ["320d", "320 d"]
-  "330d": ["330d", "330 d"]
-  "330e": ["330e", "330 e", "plugin hybrid", "plug-in hybrid"]
-  xdrive: ["xdrive", "x-drive", "4x4"]
-  m_sport: ["m sport", "msport", "m-sport"]
+  "320i": ["320i", "320 i"]
+  "318i": ["318i", "318 i"]
+  m_sport: ["m sport", "m-sport", "msport"]
+  # NOTE: removed bare "xdrive" — xDrive is a spec (AWD), not a variant.
+  # It's handled by spec_pricing.py as awd_drivetrain.
 
 nissan_leaf:
-  "24kwh": ["24 kwh", "24kwh", "visia", "acenta 24"]
-  "30kwh": ["30 kwh", "30kwh", "tekna 30"]
+  "62kwh": ["e+ 62", "62 kwh", "62kwh", "tekna 62", "e+"]
   "40kwh": ["40 kwh", "40kwh", "acenta 40", "n-connecta 40"]
-  "62kwh": ["62 kwh", "62kwh", "e+", "tekna 62", "e+ 62"]
+  "30kwh": ["30 kwh", "30kwh", "tekna 30"]
+  "24kwh": ["24 kwh", "24kwh", "visia", "acenta 24"]
 
 mercedes_benz_eklasse:
-  "e200": ["e200", "e 200"]
-  "e220d": ["e220d", "e 220 d"]
+  "e63": ["e63", "e 63", "amg 63"]
+  "e350e": ["e350e", "e 350 e"]
+  "e300e": ["e300e", "e 300 e"]
   "e300": ["e300", "e 300"]
-  "e300e": ["e300e", "e 300 e", "plug-in hybrid", "phev"]
-  "e350e": ["e350e", "e 350 e", "plug-in hybrid", "phev"]
-  "e63": ["e63", "e 63", "amg"]
-  avantgarde: ["avantgarde"]
+  "e220d": ["e220d", "e 220 d"]
+  "e200": ["e200", "e 200"]
   amg_line: ["amg line", "amg-line"]
+  avantgarde: ["avantgarde"]
   all_terrain: ["all-terrain", "all terrain"]

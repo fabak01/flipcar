@@ -10,6 +10,7 @@ from typing import Any
 
 from .adjustments import detect_adjustments
 from .carry import calculate_carry
+from .spec_pricing import detect_specs, summarize_specs
 
 
 def estimate_entry_price(listing: dict[str, Any], pristips: dict | None, params: dict[str, Any]) -> dict[str, Any]:
@@ -118,10 +119,16 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
     catalog_positive = sum(a["amount"] for a in catalog_adjustments if a["amount"] > 0)
     catalog_negative = sum(a["amount"] for a in catalog_adjustments if a["amount"] < 0)
 
-    # Combine: avoid double-counting by taking max of each source
-    positive_adj = ai_positive + catalog_positive
-    negative_adj_p50 = ai_negative_p50 + abs(catalog_negative)
-    negative_adj_p90 = ai_negative_p90 + abs(catalog_negative)
+    # Layer 3: Spec pricing (equipment/features from spec_adjustments.yaml)
+    spec_matches = detect_specs(listing)
+    spec_summary = summarize_specs(spec_matches)
+    spec_positive = spec_summary["total_positive_nok"]
+    spec_negative = spec_summary["total_negative_nok"]
+
+    # Combine all layers
+    positive_adj = ai_positive + catalog_positive + spec_positive
+    negative_adj_p50 = ai_negative_p50 + abs(catalog_negative) + abs(spec_negative)
+    negative_adj_p90 = ai_negative_p90 + abs(catalog_negative) + abs(spec_negative)
 
     # Risk buffer: 5% of anchor for uncertainty
     risk_buffer = round(market_anchor * 0.05)
@@ -158,8 +165,9 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
     if market_anchor and listing.get("price_nok") and listing["price_nok"] < market_anchor * 0.95:
         days_base = round(days_base * 0.7)
 
-    days_bear = round(days_base * 2.0)
-    days_bull = round(days_base * 0.6)
+    days_cfg = params.get("days_to_sell", {})
+    days_bear = round(days_base * days_cfg.get("p90_multiplier", 2.2))
+    days_bull = round(days_base * days_cfg.get("bull_multiplier", 0.6))
 
     # === FEES ===
     profit_params = params.get("profit", {})
@@ -244,6 +252,7 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
             "catalog_adjustments": catalog_adjustments,
             "catalog_positive": catalog_positive,
             "catalog_negative": catalog_negative,
+            "spec_summary": spec_summary,
         },
         "exit": {
             "base": round(exit_base),

@@ -1,0 +1,62 @@
+# Spec pricing layer: explicit NOK values for equipment/features affecting resale.
+# Used by src/engine/spec_pricing.py to scan listing text and apply adjustments.
+
+positive_specs:
+  tow_hitch:
+    aliases: ["hengerfeste", "tilhengerfeste", "krok", "trekkrok"]
+    premium_nok: 7000
+  heat_pump:
+    aliases: ["varmepumpe", "heat pump"]
+    premium_nok: 10000
+    applies_to: ["electric", "plugin_hybrid"]
+  winter_tires_extra_set:
+    aliases: ["to sett hjul", "vinter og sommer", "ekstra hjulsett", "2 sett"]
+    premium_nok: 6000
+  new_tires:
+    aliases: ["nye dekk", "nye vinterdekk", "nytt dekkesett"]
+    premium_nok: 4000
+  panoramic_roof:
+    aliases: ["panorama", "panoramatak", "glasstak"]
+    premium_nok: 5000
+  leather_interior:
+    aliases: ["skinn", "skinninteriør", "leather", "helskinn"]
+    premium_nok: 4000
+  premium_audio:
+    aliases: ["harman kardon", "bowers", "bang olufsen", "premium lyd", "meridian"]
+    premium_nok: 5000
+  autopilot_fsd:
+    aliases: ["autopilot", "fsd", "full self", "enhanced autopilot"]
+    premium_nok: 15000
+    applies_to_make: ["Tesla"]
+  long_range_battery:
+    aliases: ["long range", "langrekkevidde", "stor batteri", "77 kwh", "82 kwh"]
+    premium_nok: 12000
+    applies_to: ["electric"]
+  awd_drivetrain:
+    aliases: ["4wd", "awd", "quattro", "4motion", "firehjulsdrift", "xdrive"]
+    premium_nok: 8000
+    # Only match if alias is preceded/followed by word boundary, not substring
+    word_boundary: true
+  adaptive_cruise:
+    aliases: ["adaptiv cruise", "adaptive cruise"]
+    premium_nok: 3000
+  heated_steering:
+    aliases: ["varme i ratt", "oppvarmet ratt"]
+    premium_nok: 2000
+
+negative_specs:
+  accident_history:
+    aliases: ["kollisjon", "ulykke", "krasj", "skade reparert", "lakkreparert"]
+    discount_nok: -20000
+  high_owner_count:
+    threshold: 4
+    per_extra_owner_nok: -3000
+  smoking_car:
+    aliases: ["røyker", "røykebil", "røykelukt"]
+    discount_nok: -8000
+  taxi_use:
+    aliases: ["taxi", "drosje"]
+    discount_nok: -15000
+  missing_service_book:
+    aliases: ["ingen service", "mangler service", "uten servicehefte"]
+    discount_nok: -10000

@@ -320,8 +320,8 @@ def _browser_extract(regnr: str, km: int, headless: bool = True) -> dict[str, An
         marker = " *** VALUATION ***" if is_valuation else ""
         print(f"[PRISTIPS]   XHR #{i}: {url[:150]}{marker}")
 
-    # --- Always save artifacts (not just on failure) ---
-    _save_debug_artifacts(regnr, km, session)
+    # --- Conditionally save artifacts (controlled by pristips_debug.save_artifacts) ---
+    _save_debug_if_enabled(regnr, km, session, extraction_failed=False)
 
     result: dict[str, Any] = {}
 
@@ -382,6 +382,9 @@ def _browser_extract(regnr: str, km: int, headless: bool = True) -> dict[str, An
         return result
 
     print(f"[PRISTIPS] _browser_extract: ALL STRATEGIES FAILED. result_keys={sorted(k for k,v in result.items() if v is not None) if result else 'empty'}")
+
+    # Always save artifacts on failure regardless of toggle
+    _save_debug_if_enabled(regnr, km, session, extraction_failed=True)
 
     # Return partial data (market activity without price) if we have any
     if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
@@ -775,6 +778,23 @@ def _parse_nok(s: str) -> int:
     return int(re.sub(r'[\s\xa0]+', '', s.strip()))
 
 
+def _save_debug_if_enabled(regnr: str, km: int, session: dict[str, Any], extraction_failed: bool = False) -> None:
+    """Save debug artifacts only if toggle is on OR extraction failed."""
+    if extraction_failed:
+        # Always save on failure
+        _save_debug_artifacts(regnr, km, session)
+        return
+    try:
+        import yaml as _yaml
+        cfg_path = Path(__file__).parent.parent.parent / "config" / "params.yaml"
+        with open(cfg_path) as f:
+            cfg = _yaml.safe_load(f)
+        if cfg.get("pristips_debug", {}).get("save_artifacts", False):
+            _save_debug_artifacts(regnr, km, session)
+    except Exception:
+        pass  # Don't fail on config read errors
+
+
 def _save_debug_artifacts(regnr: str, km: int, session: dict[str, Any]) -> None:
     """Save comprehensive debug artifacts when extraction fails.
 
@@ -965,8 +985,8 @@ def get_pristips(registration_number: str, km: int, headless: bool = True) -> di
                 inner_text = session["inner_text"]
                 print(f"[PRISTIPS] Session OK: {len(captured)} XHR, {len(inner_text)} chars innerText")
 
-                # Always save artifacts
-                _save_debug_artifacts(reg, km_int, session)
+                # Conditionally save artifacts (toggle-controlled)
+                _save_debug_if_enabled(reg, km_int, session, extraction_failed=False)
 
                 result: dict[str, Any] = {}
 
@@ -1079,8 +1099,11 @@ def get_pristips_batch_smart(
 
     Reduces 500 lookups to ~30-50 unique combinations.
     Returns {listing_id: pristips_result}.
+    Logs instrumentation metrics after each run.
     """
     from src.engine.regnr_registry import get_reference_regnr
+
+    batch_start = time.time()
 
     # Group by model/variant/year
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -1089,6 +1112,10 @@ def get_pristips_batch_smart(
         groups.setdefault(key, []).append(listing)
 
     results: dict[str, dict[str, Any]] = {}
+    lookups_attempted = 0
+    lookups_success = 0
+    listings_covered = 0
+    groups_no_regnr = 0
 
     for _key, group_listings in groups.items():
         # Find a regnr for this group
@@ -1107,6 +1134,7 @@ def get_pristips_batch_smart(
                 sample.get("year", 0),
             )
         if not regnr:
+            groups_no_regnr += 1
             continue
 
         # Bucket km in 10k intervals
@@ -1121,13 +1149,34 @@ def get_pristips_batch_smart(
 
         # One lookup per km-bucket
         for km_bucket, bucket_listings in sorted(km_buckets.items()):
+            lookups_attempted += 1
             pristips = get_pristips_cached(regnr, km_bucket)
 
             if pristips:
+                lookups_success += 1
                 for l in bucket_listings:
                     results[l["listing_id"]] = pristips
+                    listings_covered += 1
 
             # Rate limit between browser lookups
             time.sleep(3)
+
+    elapsed = time.time() - batch_start
+    avg_per_lookup = elapsed / max(lookups_attempted, 1)
+
+    logger.info(
+        "BATCH METRICS: %d total listings | %d unique batch keys | "
+        "%d covered by batch | %d lookups attempted | %d lookups success (%.0f%%) | "
+        "%d groups no regnr | %.1fs total | %.1fs per lookup",
+        len(listings),
+        len(groups),
+        listings_covered,
+        lookups_attempted,
+        lookups_success,
+        (lookups_success / max(lookups_attempted, 1)) * 100,
+        groups_no_regnr,
+        elapsed,
+        avg_per_lookup,
+    )
 
     return results

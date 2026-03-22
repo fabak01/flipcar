@@ -24,7 +24,7 @@ from src.db.supabase_client import (
 )
 from src.engine.comps import find_comps
 from src.engine.pristips import get_pristips_batch_smart, get_pristips_cached
-from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr, save_registry
+from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr, get_reference_regnr_with_confidence, save_registry
 from src.engine.rep_estimator import estimate_repairs
 from src.engine.text_analyzer import analyze_listing_text
 from src.engine.underwriting import underwrite_deal
@@ -127,15 +127,21 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
             # Try individual lookup for listings not covered by batch
             regnr = listing.get("registration_number")
             if not regnr:
-                regnr = get_reference_regnr(
+                regnr, regnr_confidence = get_reference_regnr_with_confidence(
                     registry, listing.get("make", ""), listing.get("model", ""),
                     listing.get("variant", "unknown"), listing.get("year", 0),
                 )
                 listing["regnr_source"] = "reference" if regnr else None
+                listing["regnr_confidence"] = regnr_confidence
             else:
                 listing["regnr_source"] = "listing"
+                listing["regnr_confidence"] = "HIGH"
 
-            if regnr and (listing.get("km") or 0) > 0:
+            # LOW confidence regnr → skip for production (WEAK_ANCHOR)
+            if listing.get("regnr_confidence") == "LOW":
+                listing["pristips"] = None
+                listing["pristips_skip_reason"] = "WEAK_ANCHOR"
+            elif regnr and (listing.get("km") or 0) > 0:
                 listing["pristips"] = get_pristips_cached(regnr, int(listing["km"]))
                 if listing["pristips"]:
                     pristips_count += 1

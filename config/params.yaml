@@ -28,6 +28,9 @@ comps:
   outlier_low_pct: 5
   outlier_high_pct: 95
   insufficient_comps_uncertainty: 0.25
+  max_km_diff_absolute: 50000
+  max_price_ratio: 2.5
+  min_price_ratio: 0.4
 transaction_discount:
   privat: 0.07
   forhandler: 0.04
@@ -92,6 +95,8 @@ pristips_health:
   min_success_rate: 0.3
   login_redirect_alert: true
   max_consecutive_failures: 5
+pristips_debug:
+  save_artifacts: false  # Set true to always save debug artifacts; false = only on failure
 screener:
   pass_threshold: 0.3
   under_median_threshold: 0.95

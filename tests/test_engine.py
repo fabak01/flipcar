@@ -782,3 +782,107 @@ class TestAuditNaming:
         assert "listing_price_nok" in record
         assert "assumed_entry_price" in record
         assert "required_discount_to_mpp" in record
+
+
+# --- Spec pricing ---
+
+class TestSpecPricing:
+    def test_detect_positive_specs(self):
+        from src.engine.spec_pricing import detect_specs
+        listing = {
+            "listing_text": "Bilen har hengerfeste, panoramatak og harman kardon. Varmepumpe installert.",
+            "fuel_type": "el",
+            "make": "Tesla",
+        }
+        specs = detect_specs(listing)
+        spec_names = [s["spec"] for s in specs]
+        assert "tow_hitch" in spec_names
+        assert "panoramic_roof" in spec_names
+        assert "premium_audio" in spec_names
+        assert "heat_pump" in spec_names
+        assert all(s["type"] == "positive" for s in specs)
+
+    def test_detect_negative_specs(self):
+        from src.engine.spec_pricing import detect_specs
+        listing = {
+            "listing_text": "Brukt som taxi. Røykelukt i kupeen. Ingen service utført.",
+            "make": "Toyota",
+        }
+        specs = detect_specs(listing)
+        spec_names = [s["spec"] for s in specs]
+        assert "taxi_use" in spec_names
+        assert "smoking_car" in spec_names
+        assert "missing_service_book" in spec_names
+        assert all(s["amount_nok"] < 0 for s in specs)
+
+    def test_fuel_type_filter(self):
+        from src.engine.spec_pricing import detect_specs
+        # heat_pump should NOT match for ICE cars
+        listing = {"listing_text": "har varmepumpe", "fuel_type": "bensin", "make": "VW"}
+        specs = detect_specs(listing)
+        spec_names = [s["spec"] for s in specs]
+        assert "heat_pump" not in spec_names
+
+    def test_high_owner_count(self):
+        from src.engine.spec_pricing import detect_specs
+        listing = {"listing_text": "", "make": "VW", "n_owners": 6}
+        specs = detect_specs(listing)
+        owner_specs = [s for s in specs if s["spec"] == "high_owner_count"]
+        assert len(owner_specs) == 1
+        assert owner_specs[0]["amount_nok"] == -6000  # 2 extra owners × -3000
+
+
+# --- Variant normalization ---
+
+class TestVariantNormalization:
+    def test_performance_before_awd(self):
+        """Tesla Model Y Performance AWD should be 'performance', NOT 'long_range'."""
+        import yaml
+        aliases = yaml.safe_load(open(CONFIG_DIR / "variant_aliases.yaml"))
+        v, penalty = normalize_variant("Tesla", "Model Y", "", "Tesla Model Y Performance AWD", aliases)
+        assert v == "performance"
+
+    def test_standard_range_plus(self):
+        import yaml
+        aliases = yaml.safe_load(open(CONFIG_DIR / "variant_aliases.yaml"))
+        v, _ = normalize_variant("Tesla", "Model 3", "", "Tesla Model 3 Standard Range Plus", aliases)
+        assert v == "standard_range"
+
+    def test_golf_r_line_not_r(self):
+        """VW Golf R-Line should NOT match as 'r' (R-Line removed from aliases)."""
+        import yaml
+        aliases = yaml.safe_load(open(CONFIG_DIR / "variant_aliases.yaml"))
+        v, _ = normalize_variant("Volkswagen", "Golf", "R-Line", "Volkswagen Golf R-Line 2021", aliases)
+        # Should NOT be 'r' (Golf R) since R-Line is just a trim package
+        assert v != "r"
+
+
+# --- Regnr confidence ---
+
+class TestRegnrConfidence:
+    def test_exact_match_is_medium(self):
+        from src.engine.regnr_registry import get_reference_regnr_with_confidence
+        registry = {"tesla_model_3_long_range_2021": "AB12345"}
+        regnr, conf = get_reference_regnr_with_confidence(registry, "Tesla", "Model 3", "long_range", 2021)
+        assert regnr == "AB12345"
+        assert conf == "MEDIUM"
+
+    def test_any_variant_fallback_is_low(self):
+        from src.engine.regnr_registry import get_reference_regnr_with_confidence
+        registry = {"tesla_model_3_any_2021": "CD67890"}
+        regnr, conf = get_reference_regnr_with_confidence(registry, "Tesla", "Model 3", "performance", 2021)
+        assert regnr == "CD67890"
+        assert conf == "LOW"
+
+    def test_year_offset_is_low(self):
+        from src.engine.regnr_registry import get_reference_regnr_with_confidence
+        registry = {"tesla_model_3_any_2020": "EF11111"}
+        regnr, conf = get_reference_regnr_with_confidence(registry, "Tesla", "Model 3", "unknown", 2021)
+        assert regnr == "EF11111"
+        assert conf == "LOW"
+
+    def test_no_match_is_none(self):
+        from src.engine.regnr_registry import get_reference_regnr_with_confidence
+        regnr, conf = get_reference_regnr_with_confidence({}, "Tesla", "Model 3", "unknown", 2021)
+        assert regnr is None
+        assert conf == "NONE"

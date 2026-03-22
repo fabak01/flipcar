@@ -59,24 +59,48 @@ def get_reference_regnr(
     variant: str,
     year: int,
 ) -> str | None:
-    """Find best reference regnr for a listing without its own regnr."""
-    # 1. Exact: same variant + year
+    """Find best reference regnr for a listing without its own regnr.
+
+    Use get_reference_regnr_with_confidence() for production code that
+    needs confidence scoring.
+    """
+    regnr, _confidence = get_reference_regnr_with_confidence(registry, make, model, variant, year)
+    return regnr
+
+
+def get_reference_regnr_with_confidence(
+    registry: dict[str, str],
+    make: str,
+    model: str,
+    variant: str,
+    year: int,
+) -> tuple[str | None, str]:
+    """Find best reference regnr with confidence level.
+
+    Returns:
+        (regnr, confidence) where confidence is:
+        - "HIGH": regnr from listing itself (handled by caller)
+        - "MEDIUM": exact variant+year match in registry
+        - "LOW": any-variant or year±1 fallback
+        - "NONE": no match found
+    """
+    # 1. Exact: same variant + year → MEDIUM confidence
     key = _make_key(make, model, variant, year)
     if key in registry:
-        return registry[key]
+        return registry[key], "MEDIUM"
 
-    # 2. Any variant + same year
+    # 2. Any variant + same year → LOW confidence
     key = _make_key(make, model, "any", year)
     if key in registry:
-        return registry[key]
+        return registry[key], "LOW"
 
-    # 3. Any variant + year +/-1
+    # 3. Any variant + year +/-1 → LOW confidence
     for dy in [-1, 1]:
         key = _make_key(make, model, "any", year + dy)
         if key in registry:
-            return registry[key]
+            return registry[key], "LOW"
 
-    return None
+    return None, "NONE"
 
 
 def save_registry(registry: dict[str, str], all_listings: list[dict[str, Any]]) -> None:

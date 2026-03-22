@@ -54,9 +54,10 @@ def estimate_days_to_sell(listing: dict[str, Any], pristips: dict | None, params
     elif month == 7:
         factor *= 1.25
 
+    days_cfg = params.get("days_to_sell", {})
     days_p50 = round(baseline * factor)
-    days_p90 = round(days_p50 * 2.0)
-    days_bull = round(days_p50 * 0.6)
+    days_p90 = round(days_p50 * days_cfg.get("p90_multiplier", 2.2))
+    days_bull = round(days_p50 * days_cfg.get("bull_multiplier", 0.6))
 
     return {
         "days_p50": days_p50,

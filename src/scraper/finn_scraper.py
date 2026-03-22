@@ -37,7 +37,12 @@ def _model_key(make: str, model: str) -> str:
 def normalize_variant(
     make: str, model: str, variant_raw: str, title: str, aliases: dict[str, Any]
 ) -> tuple[str, float]:
-    """Match variant text against known aliases. Returns (variant, uncertainty_penalty)."""
+    """Match variant text against known aliases. Returns (variant, uncertainty_penalty).
+
+    Aliases in YAML are checked in definition order (most specific first).
+    Within each variant, longer aliases are checked before shorter ones to avoid
+    substring false positives.
+    """
     key = _model_key(make, model)
     model_aliases = aliases.get(key, {})
     if not model_aliases:
@@ -45,8 +50,10 @@ def normalize_variant(
 
     search_text = f"{variant_raw or ''} {title}".lower().strip()
 
+    # Check variants in YAML order; within each, sort aliases longest-first
     for canonical, alias_list in model_aliases.items():
-        for alias in alias_list:
+        sorted_aliases = sorted(alias_list, key=len, reverse=True)
+        for alias in sorted_aliases:
             if alias.lower() in search_text:
                 return canonical, 0.0
 
@@ -394,7 +401,7 @@ def scrape_model(
         for raw in raw_listings:
             # Post-filter: verify heading contains expected make/model
             heading = str(raw.get("heading", "")).lower()
-            if make.lower() not in heading and model.lower() not in heading:
+            if make.lower() not in heading or model.lower() not in heading:
                 continue
 
             normalized = _normalize_listing(raw, make, model, aliases)
