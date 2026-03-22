@@ -932,42 +932,115 @@ def _api_fallback(regnr: str, km: int) -> dict[str, Any] | None:
 def get_pristips(registration_number: str, km: int, headless: bool = True) -> dict[str, Any] | None:
     """Fetch FINN Pristips data.
 
-    Primary: headless browser with cookies (gets price estimate).
-    Fallback: public API (market data only, no price).
+    Uses the exact same flow as scripts/run_live_get_pristips.py:
+    1. Load cookies, run browser session
+    2. Extract price from /api/ads/price/valuation XHR (authoritative)
+    3. Extract market activity from other XHR endpoints
+    4. innerText fallback for price
+    5. Script JSON fallback for price
+    6. API fallback (no price, market activity only)
     """
     reg = registration_number.strip().upper().replace(" ", "")
     km_int = int(km)
 
-    print(f"[PRISTIPS] ENTER get_pristips regnr={reg} km={km_int} headless={headless}")
+    print(f"[PRISTIPS] ENTER get_pristips regnr={reg} km={km_int}")
 
-    # 1. Try browser extraction
-    print(f"[PRISTIPS] get_pristips: calling _browser_extract(headless={headless})")
-    browser_result = _browser_extract(reg, km_int, headless=headless)
-    print(f"[PRISTIPS] get_pristips: _browser_extract returned: price={browser_result.get('market_anchor_price') if browser_result else 'None'}")
+    # --- Step 1: Browser extraction (same as run_live_get_pristips.py) ---
+    browser_result = None
 
-    if browser_result and browser_result.get("market_anchor_price"):
-        browser_result["registration_number"] = reg
-        browser_result["km"] = km_int
-        browser_result["fetched_at"] = datetime.now(timezone.utc).isoformat()
-        browser_result["source"] = "finn_pristips_browser"
-        print(f"[PRISTIPS] get_pristips RETURNING browser result: price={browser_result['market_anchor_price']}, source=finn_pristips_browser")
-        return browser_result
+    if COOKIE_FILE.exists():
+        try:
+            from playwright.sync_api import sync_playwright  # noqa: F401
+            cookies = json.loads(COOKIE_FILE.read_text())
+            print(f"[PRISTIPS] Loaded {len(cookies)} cookies, running browser session...")
 
-    # 2. Fallback to API
-    print(f"[PRISTIPS] get_pristips: browser failed, trying API fallback")
+            session = run_pristips_browser_session(reg, km_int, cookies, headless=headless)
+
+            if session.get("error"):
+                print(f"[PRISTIPS] Browser session error: {session['error']}")
+            elif session.get("login_required"):
+                print("[PRISTIPS] Login required — cookies expired")
+            else:
+                captured = session["captured_responses"]
+                inner_text = session["inner_text"]
+                print(f"[PRISTIPS] Session OK: {len(captured)} XHR, {len(inner_text)} chars innerText")
+
+                # Always save artifacts
+                _save_debug_artifacts(reg, km_int, session)
+
+                result: dict[str, Any] = {}
+
+                # Strategy 1: valuation XHR (authoritative price)
+                valuation = _extract_valuation_from_xhr(captured)
+                if valuation:
+                    result.update(valuation)
+                    print(f"[PRISTIPS] Valuation XHR: price={result['market_anchor_price']}")
+
+                # Strategy 2: market activity from other XHR
+                activity = _extract_market_activity_from_xhr(captured)
+                if activity:
+                    for k, v in activity.items():
+                        if v is not None and result.get(k) is None:
+                            result[k] = v
+
+                # Strategy 3: innerText fallback for price
+                if not result.get("market_anchor_price"):
+                    it_data = _parse_pristips_innertext(inner_text)
+                    if it_data:
+                        for k, v in it_data.items():
+                            if v is not None and result.get(k) is None:
+                                result[k] = v
+                        if result.get("market_anchor_price"):
+                            print(f"[PRISTIPS] innerText fallback: price={result['market_anchor_price']}")
+
+                # Strategy 4: script JSON fallback for price
+                if not result.get("market_anchor_price"):
+                    script_data = _parse_pristips_script_json(session["html"])
+                    if script_data:
+                        for k, v in script_data.items():
+                            if v is not None and result.get(k) is None:
+                                result[k] = v
+
+                # Merge extra innerText data even if we got price from XHR
+                if result.get("market_anchor_price") and valuation:
+                    it_data = _parse_pristips_innertext(inner_text)
+                    if it_data:
+                        for k, v in it_data.items():
+                            if v is not None and result.get(k) is None:
+                                result[k] = v
+
+                if result.get("market_anchor_price"):
+                    result["registration_number"] = reg
+                    result["km"] = km_int
+                    result["fetched_at"] = datetime.now(timezone.utc).isoformat()
+                    result["source"] = "finn_pristips_browser"
+                    print(f"[PRISTIPS] RETURNING browser: price={result['market_anchor_price']}, low={result.get('market_anchor_low')}, high={result.get('market_anchor_high')}")
+                    return result
+
+                # Partial browser data (no price but has activity)
+                if result and any(v is not None for k, v in result.items() if k.startswith("market_")):
+                    browser_result = result
+
+        except ImportError:
+            print("[PRISTIPS] Playwright not installed")
+        except Exception as e:
+            print(f"[PRISTIPS] Browser exception: {e}")
+    else:
+        print(f"[PRISTIPS] No cookies file at {COOKIE_FILE}")
+
+    # --- Step 2: API fallback ---
+    print("[PRISTIPS] Browser got no price, trying API fallback...")
     api_result = _api_fallback(reg, km_int)
     if api_result:
-        print(f"[PRISTIPS] get_pristips: API fallback returned: days={api_result.get('market_days_to_sell')}, active={api_result.get('market_active_similar')}")
-        # Merge any partial browser data (e.g. days_to_sell from innertext)
+        # Merge partial browser data
         if browser_result:
             for k, v in browser_result.items():
                 if v is not None and api_result.get(k) is None:
                     api_result[k] = v
-        print(f"[PRISTIPS] get_pristips RETURNING API fallback: price={api_result.get('market_anchor_price')}")
+        print(f"[PRISTIPS] RETURNING API fallback: price={api_result.get('market_anchor_price')}")
         return api_result
 
-    print("[PRISTIPS] get_pristips RETURNING None (no data)")
-    logger.warning("Pristips: ingen data for %s", reg)
+    print("[PRISTIPS] RETURNING None")
     return None
 
 
