@@ -1093,3 +1093,78 @@ class TestDealBreakdown:
         }
         deal = underwrite_deal(listing, params)
         assert "under MPP" in deal["discount_display"] or "ADVARSEL" in deal["discount_display"]
+
+
+# --- CLI --limit flag ---
+
+class TestCLILimitFlag:
+    def test_limit_flag_accepted(self):
+        """--limit should be accepted by argparse without error."""
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--model", type=str, default=None)
+        parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--clear-cache", action="store_true")
+        parser.add_argument("--limit", type=int, default=None)
+        args = parser.parse_args(["--limit", "5", "--dry-run", "--model", "Tesla Model 3"])
+        assert args.limit == 5
+        assert args.dry_run is True
+        assert args.model == "Tesla Model 3"
+
+    def test_limit_none_by_default(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--limit", type=int, default=None)
+        args = parser.parse_args([])
+        assert args.limit is None
+
+
+# --- CSV new columns ---
+
+class TestCSVNewColumns:
+    def test_write_csv_includes_new_columns(self, tmp_path):
+        """CSV should include market_anchor_price, valuation_mode, etc. when present."""
+        import csv
+        from src.output.formatter import write_csv
+        records = [{
+            "listing_id": "123",
+            "make": "Tesla", "model": "Model 3", "variant": "long_range",
+            "year": 2021, "km": 50000, "listing_price_nok": 350000,
+            "price_parse_type": "sale_price",
+            "market_anchor_price": 340000,
+            "market_anchor_low": 310000,
+            "market_anchor_high": 370000,
+            "valuation_mode": "browser_xhr",
+            "anchor_confidence": "HIGH",
+            "location": "Oslo",
+            "classification": "KONTAKT",
+            "scenarios": {"80pct": {"profit_base": 25000, "profit_bear": -2000, "roe_base_annual": 15}},
+            "mpp": 310000,
+            "discount_needed_pct": 0.114,
+            "discount_display": "Trenger 11.4% lavere pris",
+            "skip_reason": None,
+            "explanation": "Annonsepris: 350 000 kr\nPristips: 340 000 kr",
+            "comps": {"n_comps": 8, "tier": 1},
+            "days": {"base": 25},
+            "loan_recommendation": "Hoey laan OK (80%)",
+            "listing_url": "https://finn.no/car/used/ad.html?finnkode=123",
+        }]
+        csv_path = str(tmp_path / "deals.csv")
+        write_csv(records, csv_path)
+
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["market_anchor_price"] == "340000"
+        assert row["market_anchor_low"] == "310000"
+        assert row["market_anchor_high"] == "370000"
+        assert row["valuation_mode"] == "browser_xhr"
+        assert row["anchor_confidence"] == "HIGH"
+        assert row["explanation"] == "Annonsepris: 350 000 kr"  # first line only
+        # Existing fields still present
+        assert row["mpp"] == "310000"
+        assert row["discount_display"] == "Trenger 11.4% lavere pris"
+        assert row["listing_url"] == "https://finn.no/car/used/ad.html?finnkode=123"

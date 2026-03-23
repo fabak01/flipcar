@@ -74,7 +74,7 @@ def check_health(results: dict[str, list[dict[str, Any]]], params: dict[str, Any
     return status
 
 
-def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_cache: bool = False) -> None:
+def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_cache: bool = False, limit: int | None = None) -> None:
     load_dotenv()
     params = load_all_params()
 
@@ -104,6 +104,11 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
 
     all_listings = flatten_results(results)
     logger.info("Scraped %d listings total", len(all_listings))
+
+    # 1b. Apply --limit if set (truncate BEFORE expensive downstream steps)
+    if limit and limit > 0 and len(all_listings) > limit:
+        logger.info("Applying --limit %d (from %d listings)", limit, len(all_listings))
+        all_listings = all_listings[:limit]
 
     # 2. Save raw data
     for listing in all_listings:
@@ -347,8 +352,14 @@ def run_daily(model_filter: str | None = None, dry_run: bool = False, do_clear_c
             "classification": deal.get("classification", {}).get("label", ""),
             "classification_reason": deal.get("classification", {}).get("reason", ""),
             "loan_recommendation": deal.get("classification", {}).get("loan_rec", ""),
+            "skip_reason": l.get("skip_reason"),
             # Market anchor (Pristips)
             "market": market,
+            "market_anchor_price": market.get("anchor"),
+            "market_anchor_low": market.get("low"),
+            "market_anchor_high": market.get("high"),
+            "valuation_mode": deal.get("breakdown", {}).get("valuation_mode"),
+            "anchor_confidence": deal.get("breakdown", {}).get("anchor_confidence"),
             # Adjustments (transparent breakdown)
             "adjustments": adj,
             # Exit values
@@ -455,5 +466,6 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default=None, help="Filter to a single model (e.g. 'Tesla Model 3')")
     parser.add_argument("--dry-run", action="store_true", help="Print deals to terminal, don't send Telegram")
     parser.add_argument("--clear-cache", action="store_true", help="Clear all Supabase caches before running")
+    parser.add_argument("--limit", type=int, default=None, help="Limit to N listings after scraping (for fast smoke tests)")
     args = parser.parse_args()
-    run_daily(model_filter=args.model, dry_run=args.dry_run, do_clear_cache=args.clear_cache)
+    run_daily(model_filter=args.model, dry_run=args.dry_run, do_clear_cache=args.clear_cache, limit=args.limit)

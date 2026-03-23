@@ -148,9 +148,11 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
 
     columns = [
         "listing_id", "make", "model", "variant", "year", "km", "listing_price_nok",
-        "price_parse_type", "location", "classification",
+        "price_parse_type", "market_anchor_price", "market_anchor_low", "market_anchor_high",
+        "valuation_mode", "anchor_confidence", "location", "classification",
         "profit_base_80", "profit_bear_80", "roe_base_80",
         "mpp", "discount_needed_pct", "discount_display",
+        "skip_reason", "explanation",
         "n_comps", "tier", "days_p50", "loan_recommendation", "listing_url",
     ]
 
@@ -161,6 +163,9 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
 
         for r in sorted_records:
             s80 = r.get("scenarios", {}).get("80pct", {})
+            # Truncate explanation for CSV (first line only)
+            expl = r.get("explanation", "") or ""
+            expl_short = expl.split("\n")[0] if expl else ""
             writer.writerow({
                 "listing_id": r.get("listing_id"),
                 "make": r.get("make"),
@@ -170,6 +175,11 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
                 "km": r.get("km"),
                 "listing_price_nok": r.get("listing_price_nok"),
                 "price_parse_type": r.get("price_parse_type"),
+                "market_anchor_price": r.get("market_anchor_price"),
+                "market_anchor_low": r.get("market_anchor_low"),
+                "market_anchor_high": r.get("market_anchor_high"),
+                "valuation_mode": r.get("valuation_mode"),
+                "anchor_confidence": r.get("anchor_confidence"),
                 "location": r.get("location"),
                 "classification": r.get("classification"),
                 "profit_base_80": s80.get("profit_base"),
@@ -178,6 +188,8 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
                 "mpp": r.get("mpp"),
                 "discount_needed_pct": r.get("discount_needed_pct"),
                 "discount_display": r.get("discount_display"),
+                "skip_reason": r.get("skip_reason"),
+                "explanation": expl_short,
                 "n_comps": r.get("comps", {}).get("n_comps"),
                 "tier": r.get("comps", {}).get("tier"),
                 "days_p50": r.get("days", {}).get("base"),
