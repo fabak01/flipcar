@@ -87,24 +87,14 @@ adjustments:
       adjustment: -50000
     ikke_oppgitt:
       patterns: []
-      adjustment: -15000
+      adjustment: -3000  # Reduced: absence of mention is NOT proof of defect
     garanti_gjenstar:
       patterns: ["batterigaranti", "garanti pa batteri", "garantien gjelder"]
       adjustment: 15000
 
-  utstyr:
-    hengerfeste:
-      patterns: ["hengerfeste", "tilhengerfeste"]
-      adjustment: 7000
-    varmepumpe:
-      patterns: ["varmepumpe"]
-      adjustment: 10000
-    panoramatak:
-      patterns: ["panorama", "glasstak"]
-      adjustment: 4000
-    skinninteri_r:
-      patterns: ["skinninteri", "skinn", "leather"]
-      adjustment: 5000
+  # Equipment adjustments REMOVED from issue_catalog.
+  # Positive equipment lives in spec_adjustments.yaml ONLY to avoid double-counting.
+  # See: config/spec_adjustments.yaml for hengerfeste, varmepumpe, panoramatak, skinn etc.
 
   skade:
     smaskader:
