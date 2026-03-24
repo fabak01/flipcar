@@ -17,12 +17,11 @@ from src.engine.days_to_sell import estimate_days, price_factor, season_factor
 from src.engine.carry import calculate_carry
 from src.engine.profit import calculate_profit
 from src.engine.mpp import calculate_mpp
-from src.engine.classifier import classify_deal, classify_deal_new
+from src.engine.classifier import classify_deal_v2, detect_hard_red_flags
 from src.engine.battery_soh import calculate_soh_scenarios
 from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr
 from src.engine.pristips import _parse_pristips_innertext, _extract_market_activity_from_xhr, _extract_valuation_from_xhr
 from src.engine.underwriting import underwrite_deal
-from src.output.formatter import build_audit_record
 
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 
@@ -372,67 +371,70 @@ class TestMPP:
 # --- Classifier ---
 
 class TestClassifier:
-    def test_green_deal(self, params):
-        profit_result = {"scenarios": {"80pct_loan": {"profit_base": 25000, "profit_bear": 5000}}}
-        comp_result = {"tier": 1, "n_comps": 12, "flags": []}
-        listing = {"dq_score": 0.90}
-        result = classify_deal(profit_result, comp_result, listing, params)
-        assert result["classification"] == "KONTAKT"
+    """V2 classifier tests: spread-based CALL_NOW/MESSAGE/WATCH/PASS + execution_gate."""
 
-    def test_hard_pass(self, params):
-        profit_result = {"scenarios": {"80pct_loan": {"profit_base": -20000, "profit_bear": -50000}}}
-        comp_result = {"tier": 2, "n_comps": 10, "flags": []}
-        listing = {"dq_score": 0.80}
-        result = classify_deal(profit_result, comp_result, listing, params)
-        assert result["classification"] == "HARD PASS"
+    def test_call_now_high_spread(self):
+        """spread_ask >= 10% → CALL_NOW."""
+        from src.engine.classifier import classify_deal_v2
+        result = classify_deal_v2(spread_ask_pct=0.12, spread_bid_pct=0.08, hard_red_flag=False, has_pristips=True, ai_status="ok")
+        assert result["label"] == "CALL_NOW"
+        assert result["execution_gate"] == "SEND"
 
-    def test_low_comps_flag(self, params):
-        profit_result = {"scenarios": {"80pct_loan": {"profit_base": 15000, "profit_bear": 0}}}
-        comp_result = {"tier": 3, "n_comps": 4, "flags": ["INSUFFICIENT_COMPS"]}
-        listing = {"dq_score": 0.90}
-        result = classify_deal(profit_result, comp_result, listing, params)
-        assert "TYNT COMP-GRUNNLAG" in result["flags"]
-        assert "FOR FA COMPS" in result["flags"]
+    def test_message_moderate_spread(self):
+        """spread_bid >= 6% and spread_ask >= 4% → MESSAGE."""
+        from src.engine.classifier import classify_deal_v2
+        result = classify_deal_v2(spread_ask_pct=0.05, spread_bid_pct=0.07, hard_red_flag=False, has_pristips=True, ai_status="ok")
+        assert result["label"] == "MESSAGE"
+        assert result["execution_gate"] == "SEND"
 
-    def test_loan_recommendation(self, params):
-        profit_result = {"scenarios": {"80pct_loan": {"profit_base": 25000, "profit_bear": 15000}}}
-        comp_result = {"tier": 1, "n_comps": 12, "flags": []}
-        listing = {"dq_score": 0.90}
-        result = classify_deal(profit_result, comp_result, listing, params)
-        assert "80%" in result["loan_recommendation"]
+    def test_watch_marginal_spread(self):
+        """spread_bid >= 2% but below MESSAGE thresholds → WATCH."""
+        from src.engine.classifier import classify_deal_v2
+        result = classify_deal_v2(spread_ask_pct=0.03, spread_bid_pct=0.03, hard_red_flag=False, has_pristips=True, ai_status="ok")
+        assert result["label"] == "WATCH"
+        assert result["execution_gate"] == "BLOCKED"
 
-    def test_new_classifier_green(self):
-        listing = {}
-        result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, {"market_anchor_price": 400000, "days_to_sell": 15})
-        assert result["label"] == "KONTAKT"
-        assert result["send_telegram"] is True
+    def test_pass_low_spread(self):
+        """Below all thresholds → PASS."""
+        from src.engine.classifier import classify_deal_v2
+        result = classify_deal_v2(spread_ask_pct=0.01, spread_bid_pct=0.01, hard_red_flag=False, has_pristips=True, ai_status="ok")
+        assert result["label"] == "PASS"
+        assert result["execution_gate"] == "BLOCKED"
 
-    def test_new_classifier_no_data(self):
-        """No Pristips → PRISTIPS_MISSING regardless of profit."""
-        result = classify_deal_new(25000, 5000, {}, None, None, None)
-        assert result["label"] == "PRISTIPS_MISSING"
-        assert result["send_telegram"] is False
+    def test_hard_red_flag_forces_pass(self):
+        """Hard red flag → PASS regardless of spread."""
+        from src.engine.classifier import classify_deal_v2
+        result = classify_deal_v2(spread_ask_pct=0.15, spread_bid_pct=0.12, hard_red_flag=True, has_pristips=True, ai_status="ok")
+        assert result["label"] == "PASS"
+        assert result["execution_gate"] == "BLOCKED"
 
-    def test_new_classifier_comps_only_not_sufficient(self):
-        """Comps alone (no Pristips) → PRISTIPS_MISSING."""
-        listing = {"comp_result": {"transaction_median": 400000}}
-        result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, None)
-        assert result["label"] == "PRISTIPS_MISSING"
-        assert result["send_telegram"] is False
+    def test_no_pristips_forces_pass(self):
+        """No Pristips → PASS with NO_PRISTIPS gate."""
+        from src.engine.classifier import classify_deal_v2
+        result = classify_deal_v2(spread_ask_pct=0.15, spread_bid_pct=0.12, hard_red_flag=False, has_pristips=False, ai_status="ok")
+        assert result["label"] == "PASS"
+        assert result["execution_gate"] == "NO_PRISTIPS"
 
-    def test_new_classifier_no_ai_no_pitch(self):
-        """Even with good profit + Pristips, don't pitch without AI analysis."""
-        listing = {}
-        result = classify_deal_new(25000, 5000, listing, None, None, {"market_anchor_price": 400000})
-        assert result["label"] == "MANUELL VURDERING"
-        assert result["send_telegram"] is False
+    def test_send_no_ai_when_ai_unavailable(self):
+        """CALL_NOW with ai_status != ok → SEND_NO_AI."""
+        from src.engine.classifier import classify_deal_v2
+        result = classify_deal_v2(spread_ask_pct=0.12, spread_bid_pct=0.08, hard_red_flag=False, has_pristips=True, ai_status="fallback_no_api_key")
+        assert result["label"] == "CALL_NOW"
+        assert result["execution_gate"] == "SEND_NO_AI"
 
-    def test_new_classifier_pristips_only(self):
-        """Pristips price alone (no comps) is sufficient for classification."""
-        listing = {"comp_result": {"transaction_median": None}}
-        result = classify_deal_new(25000, 5000, listing, {"issues": [{"name": "x"}]}, None, {"market_anchor_price": 400000})
-        assert result["label"] == "KONTAKT"
-        assert result["send_telegram"] is True
+    def test_hard_red_flag_detection(self):
+        """detect_hard_red_flags catches taxi, accident, rust, etc."""
+        from src.engine.classifier import detect_hard_red_flags
+        assert len(detect_hard_red_flags("Brukt som taxi i 5 år")) > 0
+        assert len(detect_hard_red_flags("Kollisjonsskade reparert")) > 0
+        assert len(detect_hard_red_flags("Rustgjennomslag i bunn")) > 0
+        assert len(detect_hard_red_flags("Fin bil, velholdt")) == 0
+
+    def test_as_is_plus_fault_red_flag(self):
+        """'selges som den er' + fault → red flag."""
+        from src.engine.classifier import detect_hard_red_flags
+        flags = detect_hard_red_flags("Selges som den er. Motoren har feil.")
+        assert len(flags) > 0
 
 
 # --- Pristips extraction ---
@@ -710,14 +712,10 @@ class TestRegnrRegistry:
 # --- Underwriting ---
 
 class TestUnderwriting:
-    def test_underwrite_deal_comps_only_returns_pristips_missing(self, sample_listing, params):
-        """Comps alone are NOT sufficient — must return PRISTIPS_MISSING."""
+    def test_underwrite_deal_comps_only_returns_no_pristips(self, sample_listing, params):
+        """Comps alone are NOT sufficient — must return PASS / NO_PRISTIPS."""
         sample_listing["comp_result"] = {
-            "tier": 1,
-            "n_comps": 10,
-            "transaction_median": 380000,
-            "median_price": 400000,
-            "comp_transaction_prices": [360000, 370000, 380000, 390000, 400000],
+            "tier": 1, "n_comps": 10, "transaction_median": 380000,
         }
         sample_listing["pristips"] = {"days_to_sell": 15, "active_similar": 50, "sold_90d": 200}
         sample_listing["ai_analysis"] = {
@@ -728,10 +726,10 @@ class TestUnderwriting:
         sample_listing["rep_estimate"] = {"total_p50": 5000, "total_p90": 12000}
 
         deal = underwrite_deal(sample_listing, params)
-        # No Pristips price → PRISTIPS_MISSING, not underwritten
-        assert deal["classification"]["label"] == "PRISTIPS_MISSING"
+        # No Pristips market_anchor_price → PASS / NO_PRISTIPS
+        assert deal["classification"]["label"] == "PASS"
+        assert deal["classification"]["execution_gate"] == "NO_PRISTIPS"
         assert deal["market"]["source"] == "none"
-        assert deal["classification"]["send_telegram"] is False
 
     def test_underwrite_deal_pristips_primary(self, sample_listing, params):
         """Pristips price should be used as market anchor when available."""
@@ -754,34 +752,42 @@ class TestUnderwriting:
         deal = underwrite_deal(sample_listing, params)
         assert deal["market"]["source"] == "finn_pristips"
         assert deal["market"]["anchor"] == 410000
-        assert "scenarios" in deal
-        assert "80pct" in deal["scenarios"]
+        # V2: spread-based output, no scenarios dict
+        assert "spread_ask_pct" in deal
+        assert "adjusted_market_value" in deal
+        assert "realistic_bid_price" in deal
 
     def test_underwrite_deal_no_pristips_no_comps(self, sample_listing, params):
-        """No Pristips, no comps → PRISTIPS_MISSING."""
+        """No Pristips, no comps → PASS / NO_PRISTIPS."""
         sample_listing["comp_result"] = {"tier": None, "n_comps": 0, "transaction_median": None}
         sample_listing["pristips"] = None
         sample_listing["ai_analysis"] = None
 
         deal = underwrite_deal(sample_listing, params)
-        assert deal["classification"]["label"] == "PRISTIPS_MISSING"
-        assert deal["classification"]["send_telegram"] is False
+        assert deal["classification"]["label"] == "PASS"
+        assert deal["classification"]["execution_gate"] == "NO_PRISTIPS"
 
 
 class TestAuditNaming:
-    def test_record_contains_consistent_price_naming(self, sample_listing, params):
-        comp_result = {"tier": 1, "n_comps": 10, "comp_ids": [], "median_price": 380000, "transaction_median": 360000}
-        fmv_raw = {"raw_p10": 340000, "raw_p50": 390000, "raw_p90": 440000}
-        fmv_adjusted = {"adjusted_p10": 335000, "adjusted_p50": 385000, "adjusted_p90": 445000, "adjustments": []}
-        rep = {"lag1_issues": [], "lag2_issues": [], "correlation_factor": 1.0, "uncertainty_multiplier": 1.0, "total_p50": 5000, "total_p90": 9000}
-        days = {"p50": 25, "p90": 55, "bull": 15}
-        profit_result = calculate_profit(sample_listing, fmv_adjusted, {"total_p50": 5000, "total_p90": 9000}, days, params)
-        mpp_data = calculate_mpp(fmv_adjusted, {"total_p50": 5000, "total_p90": 9000}, {"p50": 25, "p90": 55}, params)
-        classification = classify_deal({"scenarios": {"80pct_loan": {"profit_base": 10000, "profit_bear": 1000}}}, {"tier": 1, "n_comps": 10, "flags": []}, {"dq_score": 0.9}, params)
-        record = build_audit_record(sample_listing, comp_result, fmv_raw, fmv_adjusted, rep, days, profit_result, mpp_data, classification)
-        assert "listing_price_nok" in record
-        assert "assumed_entry_price" in record
-        assert "required_discount_to_mpp" in record
+    def test_underwrite_output_has_v2_fields(self, sample_listing, params):
+        """V2 underwrite output contains consistent field naming."""
+        sample_listing["pristips"] = {
+            "market_anchor_price": 400000,
+            "market_anchor_low": 380000,
+            "market_anchor_high": 420000,
+        }
+        sample_listing["ai_analysis"] = {"issues": [], "positives": [], "condition_summary": {}}
+        sample_listing["rep_estimate"] = {"total_p50": 0, "total_p90": 0}
+        sample_listing["comp_result"] = {"tier": 1, "n_comps": 8}
+
+        deal = underwrite_deal(sample_listing, params)
+        assert "asking_price" in deal
+        assert "market_anchor_price" in deal
+        assert "adjusted_market_value" in deal
+        assert "spread_ask_pct" in deal
+        assert "spread_bid_pct" in deal
+        assert "realistic_bid_price" in deal
+        assert "ai_status" in deal
 
 
 # --- Spec pricing ---
@@ -996,15 +1002,15 @@ class TestPriceClassification:
 # --- Underwriting breakdown and explanation ---
 
 class TestDealBreakdown:
-    def test_underwrite_has_breakdown(self, params):
+    def test_underwrite_has_v2_spread_output(self, params):
+        """V2 underwriting produces spread-based output, not old breakdown dict."""
         listing = {
             "listing_id": "999", "make": "Tesla", "model": "Model 3",
             "variant": "long_range", "year": 2021, "km": 50000,
             "price_nok": 350000, "fuel_type": "electric", "seller_type": "privat",
             "listing_text": "Velholdt bil", "location_city": "Oslo",
             "pristips": {"market_anchor_price": 340000, "market_anchor_low": 310000,
-                         "market_anchor_high": 370000, "anchor_confidence": "HIGH",
-                         "valuation_mode": "browser_xhr"},
+                         "market_anchor_high": 370000},
             "ai_analysis": {"issues": [{"name": "lakk", "cost_p50": 3000, "cost_p90": 5000}],
                             "positives": [{"name": "servicebok", "value_nok": 5000}]},
             "comp_result": {"tier": 1, "n_comps": 8},
@@ -1012,22 +1018,18 @@ class TestDealBreakdown:
         }
         deal = underwrite_deal(listing, params)
 
-        # Has breakdown
-        assert "breakdown" in deal
-        bd = deal["breakdown"]
-        assert bd["P_list"] == 350000
-        assert bd["V_anchor"] == 340000
-        assert bd["anchor_source"] == "finn_pristips"
-        assert "positive_adjustments" in bd
-        assert "negative_adjustments" in bd
-        assert "repair_reserve" in bd
-        assert "risk_buffer" in bd
-        assert "adjusted_exit" in bd
-        assert "carry_fees" in bd
-        assert "mpp" in bd
-        assert "mpp_formula" in bd
-        assert "discount_needed_pct" in bd
-        assert "discount_display" in bd
+        # V2 spread-based fields
+        assert deal["asking_price"] == 350000
+        assert deal["market_anchor_price"] == 340000
+        assert "adjusted_market_value" in deal
+        assert "spread_ask_pct" in deal
+        assert "spread_ask_abs" in deal
+        assert "realistic_bid_price" in deal
+        assert "spread_bid_pct" in deal
+        assert "adj_positive" in deal
+        assert "adj_negative" in deal
+        assert "repair_buffer" in deal
+        assert "adjustments_detail" in deal
 
     def test_underwrite_has_explanation(self, params):
         listing = {
@@ -1060,10 +1062,11 @@ class TestDealBreakdown:
         }
         deal = underwrite_deal(listing, params)
         assert "explanation" in deal
-        assert "PRISTIPS_MISSING" in deal["explanation"]
+        assert "PASS" in deal["explanation"]
+        assert "Pristips" in deal["explanation"].lower() or "pristips" in deal["explanation"].lower()
 
-    def test_discount_display_needs_lower(self, params):
-        """When listing price > MPP, discount_display says 'trenger X% lavere'."""
+    def test_overpriced_listing_negative_spread(self, params):
+        """When listing price > V_adj, spread is negative → PASS."""
         listing = {
             "listing_id": "996", "make": "Tesla", "model": "Model 3",
             "variant": "long_range", "year": 2021, "km": 50000,
@@ -1076,10 +1079,11 @@ class TestDealBreakdown:
             "rep_estimate": {"total_p50": 0, "total_p90": 0},
         }
         deal = underwrite_deal(listing, params)
-        assert "lavere" in deal["discount_display"].lower() or "Trenger" in deal["discount_display"]
+        assert deal["spread_ask_pct"] < 0
+        assert deal["classification"]["label"] == "PASS"
 
-    def test_discount_display_already_below(self, params):
-        """When listing price < MPP, discount_display says 'allerede under'."""
+    def test_underpriced_listing_positive_spread(self, params):
+        """When listing price << V_adj, spread is high → CALL_NOW."""
         listing = {
             "listing_id": "995", "make": "Tesla", "model": "Model 3",
             "variant": "long_range", "year": 2021, "km": 50000,
@@ -1092,7 +1096,8 @@ class TestDealBreakdown:
             "rep_estimate": {"total_p50": 0, "total_p90": 0},
         }
         deal = underwrite_deal(listing, params)
-        assert "under MPP" in deal["discount_display"] or "ADVARSEL" in deal["discount_display"]
+        assert deal["spread_ask_pct"] > 0.10
+        assert deal["classification"]["label"] == "CALL_NOW"
 
 
 # --- CLI --limit flag ---
@@ -1122,31 +1127,39 @@ class TestCLILimitFlag:
 # --- CSV new columns ---
 
 class TestCSVNewColumns:
-    def test_write_csv_includes_new_columns(self, tmp_path):
-        """CSV should include market_anchor_price, valuation_mode, etc. when present."""
+    def test_write_csv_includes_v2_columns(self, tmp_path):
+        """CSV should include V2 columns: spread, execution_gate, ai_status, etc."""
         import csv
         from src.output.formatter import write_csv
         records = [{
             "listing_id": "123",
-            "make": "Tesla", "model": "Model 3", "variant": "long_range",
-            "year": 2021, "km": 50000, "listing_price_nok": 350000,
-            "price_parse_type": "sale_price",
+            "make": "Tesla", "model": "Model 3",
+            "year": 2021, "km": 50000,
+            "asking_price": 350000,
             "market_anchor_price": 340000,
             "market_anchor_low": 310000,
             "market_anchor_high": 370000,
-            "valuation_mode": "browser_xhr",
-            "anchor_confidence": "HIGH",
-            "location": "Oslo",
-            "classification": "KONTAKT",
-            "scenarios": {"80pct": {"profit_base": 25000, "profit_bear": -2000, "roe_base_annual": 15}},
-            "mpp": 310000,
-            "discount_needed_pct": 0.114,
-            "discount_display": "Trenger 11.4% lavere pris",
+            "adjusted_market_value": 342000,
+            "spread_ask_abs": -8000,
+            "spread_ask_pct": -0.0234,
+            "realistic_bid_price": 339500,
+            "spread_bid_abs": 2500,
+            "spread_bid_pct": 0.0073,
+            "adj_positive": 5000,
+            "adj_negative": 3000,
+            "repair_buffer": 0,
+            "classification": {"label": "PASS", "execution_gate": "BLOCKED", "reason": "low spread"},
+            "hard_red_flag": False,
+            "ai_status": "ok",
+            "ai_summary_short": "Velholdt bil",
+            "ai_positive_signals": [{"name": "god service"}],
+            "ai_negative_signals": [],
+            "ai_missing_info": [{"question": "SOH?"}],
+            "seller_motivation_score": 3,
+            "soh_status": "not_mentioned",
+            "eu_status": "valid",
             "skip_reason": None,
             "explanation": "Annonsepris: 350 000 kr\nPristips: 340 000 kr",
-            "comps": {"n_comps": 8, "tier": 1},
-            "days": {"base": 25},
-            "loan_recommendation": "Hoey laan OK (80%)",
             "listing_url": "https://finn.no/car/used/ad.html?finnkode=123",
         }]
         csv_path = str(tmp_path / "deals.csv")
@@ -1161,10 +1174,12 @@ class TestCSVNewColumns:
         assert row["market_anchor_price"] == "340000"
         assert row["market_anchor_low"] == "310000"
         assert row["market_anchor_high"] == "370000"
-        assert row["valuation_mode"] == "browser_xhr"
-        assert row["anchor_confidence"] == "HIGH"
+        assert row["adjusted_market_value"] == "342000"
+        assert row["spread_ask_pct"] == "-0.0234"
+        assert row["realistic_bid_price"] == "339500"
+        assert row["classification_label"] == "PASS"
+        assert row["execution_gate"] == "BLOCKED"
+        assert row["ai_status"] == "ok"
+        assert row["ai_summary_short"] == "Velholdt bil"
         assert row["explanation"] == "Annonsepris: 350 000 kr"  # first line only
-        # Existing fields still present
-        assert row["mpp"] == "310000"
-        assert row["discount_display"] == "Trenger 11.4% lavere pris"
-        assert row["listing_url"] == "https://finn.no/car/used/ad.html?finnkode=123"
+        assert row["url"] == "https://finn.no/car/used/ad.html?finnkode=123"
