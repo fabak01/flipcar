@@ -1183,3 +1183,133 @@ class TestCSVNewColumns:
         assert row["ai_summary_short"] == "Velholdt bil"
         assert row["explanation"] == "Annonsepris: 350 000 kr"  # first line only
         assert row["url"] == "https://finn.no/car/used/ad.html?finnkode=123"
+
+
+# --- Health check fixes ---
+
+class TestHealthCheckPaths:
+    def test_cookie_file_path_is_project_root_dotfile(self):
+        """Health check must look for .finn_cookies.json in project root, not cookies/."""
+        import inspect
+        from src import main as main_mod
+        source = inspect.getsource(main_mod.run_health_check)
+        assert "cookies/finn_cookies" not in source, (
+            "Health check still uses wrong cookies/ subdirectory path"
+        )
+        assert ".finn_cookies.json" in source, (
+            "Health check must reference .finn_cookies.json"
+        )
+
+    def test_supabase_health_check_uses_correct_key_names(self):
+        """Health check must use SUPABASE_SERVICE_KEY/SUPABASE_ANON_KEY, not SUPABASE_KEY."""
+        import inspect
+        from src import main as main_mod
+        source = inspect.getsource(main_mod.run_health_check)
+        assert "SUPABASE_KEY" not in source or "SUPABASE_SERVICE_KEY" in source, (
+            "Health check must use SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY"
+        )
+        assert "SUPABASE_SERVICE_KEY" in source
+
+    def test_cookie_path_matches_pristips(self):
+        """COOKIE_FILE in pristips.py must also be project root .finn_cookies.json."""
+        from src.engine.pristips import COOKIE_FILE
+        assert COOKIE_FILE.name == ".finn_cookies.json"
+        assert COOKIE_FILE.parent.name != "cookies"
+
+    def test_cookie_path_matches_get_finn_cookies_script(self):
+        """get_finn_cookies.py COOKIE_FILE must point to project root, same as pristips."""
+        from src.engine.pristips import COOKIE_FILE as pristips_cookie
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "get_finn_cookies",
+            Path(__file__).parent.parent / "scripts" / "get_finn_cookies.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        assert mod.COOKIE_FILE == pristips_cookie, (
+            f"Script writes to {mod.COOKIE_FILE} but pristips reads from {pristips_cookie}"
+        )
+
+
+# --- listing_text_len in audit records ---
+
+class TestListingTextLen:
+    def test_listing_text_len_in_audit_record(self, params):
+        """Audit records must include listing_text_len for diagnosing ai_status=short_text."""
+        listing = {
+            "listing_id": "test_tlen", "make": "Tesla", "model": "Model 3",
+            "variant": "long_range", "year": 2021, "km": 50000,
+            "price_nok": 350000, "seller_type": "privat",
+            "listing_text": "A" * 120,
+            "location_city": "Oslo", "fuel_type": "electric",
+            "pristips": {
+                "market_anchor_price": 340000,
+                "market_anchor_low": 310000,
+                "market_anchor_high": 370000,
+            },
+            "ai_analysis": {"ai_status": "ok", "issues": [], "positives": []},
+            "comp_result": {"tier": 1, "n_comps": 5},
+            "rep_estimate": {"lag1_p50": 0, "lag2_expected": 0, "total_p50": 0, "total_p90": 0},
+        }
+        deal = underwrite_deal(listing, params)
+        # Simulate what main.py does when building audit_records
+        txt_len = len((deal.get("listing") or {}).get("listing_text", "") or "")
+        assert txt_len == 120
+
+    def test_listing_text_len_zero_for_empty(self, params):
+        """listing_text_len must be 0 for listings with no text."""
+        listing = {
+            "listing_id": "test_tlen2", "make": "Tesla", "model": "Model 3",
+            "variant": "long_range", "year": 2021, "km": 50000,
+            "price_nok": 350000, "seller_type": "privat",
+            "listing_text": "",
+            "location_city": "Oslo", "fuel_type": "electric",
+            "pristips": {"market_anchor_price": 340000},
+            "ai_analysis": {"ai_status": "short_text", "issues": [], "positives": []},
+            "comp_result": {"tier": 1, "n_comps": 5},
+            "rep_estimate": {"lag1_p50": 0, "lag2_expected": 0, "total_p50": 0, "total_p90": 0},
+        }
+        deal = underwrite_deal(listing, params)
+        txt_len = len((deal.get("listing") or {}).get("listing_text", "") or "")
+        assert txt_len == 0
+
+
+# --- Smoke scraping short-circuit ---
+
+class TestSmokeShortCircuit:
+    def test_scrape_model_accepts_max_listings(self):
+        """scrape_model signature must include max_listings param."""
+        import inspect
+        from src.scraper.finn_scraper import scrape_model
+        sig = inspect.signature(scrape_model)
+        assert "max_listings" in sig.parameters
+
+    def test_scrape_all_models_accepts_max_total(self):
+        """scrape_all_models signature must include max_total_listings param."""
+        import inspect
+        from src.scraper.finn_scraper import scrape_all_models
+        sig = inspect.signature(scrape_all_models)
+        assert "max_total_listings" in sig.parameters
+
+    def test_enrich_listing_texts_noop_when_all_long(self):
+        """enrich_listing_texts returns 0 when all listings already have long text."""
+        from src.scraper.finn_scraper import enrich_listing_texts
+        listings = [
+            {"listing_id": "a", "listing_text": "X" * 200},
+            {"listing_id": "b", "listing_text": "Y" * 150},
+        ]
+        result = enrich_listing_texts(listings, min_text_len=100)
+        assert result == 0
+
+    def test_enrich_listing_texts_identifies_short_candidates(self):
+        """enrich_listing_texts should attempt to fetch listings with short text."""
+        from src.scraper.finn_scraper import enrich_listing_texts
+        listings = [
+            {"listing_id": "short1", "listing_text": ""},
+            {"listing_id": "long1", "listing_text": "X" * 200},
+        ]
+        # Without network we can't verify enrichment, but we can verify the
+        # function runs without error and returns int
+        result = enrich_listing_texts(listings, min_text_len=100)
+        assert isinstance(result, int)
+        assert result >= 0

@@ -382,6 +382,7 @@ def scrape_model(
     params: dict[str, Any],
     aliases: dict[str, Any],
     session: Optional[requests.Session] = None,
+    max_listings: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """Scrape all listings for a given model from FINN.
 
@@ -474,6 +475,11 @@ def scrape_model(
             logger.info("Stopping pagination for %s %s on page %d: %s", make, model, page_num, stop_reason)
             break
 
+        if max_listings and len(all_listings) >= max_listings:
+            stop_reason = "max_listings_reached"
+            logger.info("Stopping pagination for %s %s on page %d: max_listings=%d reached", make, model, page_num, max_listings)
+            break
+
         logger.info("Page %d: %d new listings (total %d, raw %d)", page_num, new_on_page, len(all_listings), len(raw_listings))
 
         # If this page had significantly fewer results than expected, it's the last page
@@ -508,8 +514,12 @@ def scrape_model(
 
 def scrape_all_models(
     config: Optional[dict[str, Any]] = None,
+    max_total_listings: Optional[int] = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Scrape listings for all configured models. Returns {make_model: [listings]}."""
+    """Scrape listings for all configured models. Returns {make_model: [listings]}.
+
+    max_total_listings: stop scraping (across all models) once this many collected.
+    """
     if config is None:
         config = load_config()
 
@@ -528,7 +538,16 @@ def scrape_all_models(
         finn_query = model_cfg.get("finn_query", f"{make} {model}")
         key = _model_key(make, model)
 
-        listings = scrape_model(make, model, finn_query, params, aliases, session)
+        if max_total_listings is not None:
+            collected_so_far = sum(len(v) for v in all_results.values())
+            if collected_so_far >= max_total_listings:
+                logger.info("Reached max_total_listings=%d, skipping remaining models", max_total_listings)
+                break
+            model_max = max_total_listings - collected_so_far
+        else:
+            model_max = None
+
+        listings = scrape_model(make, model, finn_query, params, aliases, session, max_listings=model_max)
 
         # Apply DQ scoring
         dq_params_cfg = yaml.safe_load(open(CONFIG_DIR / "params.yaml"))["data_quality"]
@@ -559,3 +578,96 @@ def flatten_results(results: dict[str, list[dict[str, Any]]]) -> list[dict[str, 
     for listings in results.values():
         flat.extend(listings)
     return flat
+
+
+def fetch_listing_detail(listing_id: str, session: Optional[requests.Session] = None) -> Optional[str]:
+    """Fetch the full description text from an individual FINN listing page.
+
+    FINN search results often omit the full body text. This fetches the
+    individual ad page and extracts the description from __NEXT_DATA__ or HTML.
+    Returns the description string, or None if unavailable.
+    """
+    if session is None:
+        session = requests.Session()
+        session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+
+    # FINN redirects /car/used/ad.html?finnkode=X → /mobility/item/X; use new URL directly
+    url = f"https://www.finn.no/mobility/item/{listing_id}"
+    try:
+        resp = session.get(url, timeout=20)
+        if resp.status_code != 200:
+            logger.debug("Detail page %s returned %d", listing_id, resp.status_code)
+            return None
+    except requests.RequestException as e:
+        logger.debug("Failed to fetch detail for %s: %s", listing_id, e)
+        return None
+
+    html = resp.text
+
+    # Primary: __NEXT_DATA__ with multiple candidate paths
+    next_data = _parse_next_data(html)
+    if next_data:
+        props = next_data.get("props", {}).get("pageProps", {})
+        for path_keys in [
+            ["ad", "description"],
+            ["ad", "body"],
+            ["adData", "description"],
+            ["adData", "body"],
+            ["initialState", "adDetails", "description"],
+        ]:
+            obj = props
+            for key in path_keys:
+                obj = obj.get(key) if isinstance(obj, dict) else None
+            if obj and isinstance(obj, str) and len(obj) > 30:
+                return obj
+
+        # Also try a queries array (React Query cache)
+        for query in next_data.get("props", {}).get("pageProps", {}).get("dehydratedState", {}).get("queries", []):
+            state_data = query.get("state", {}).get("data", {})
+            if isinstance(state_data, dict):
+                desc = state_data.get("description") or state_data.get("body")
+                if desc and isinstance(desc, str) and len(desc) > 30:
+                    return desc
+
+    # Fallback: HTML element search (FINN uses data-testid="expandable-section" for the ad body)
+    soup = BeautifulSoup(html, "html.parser")
+    for selector in [
+        '[data-testid="expandable-section"]',
+        '[data-testid="ad-description"]',
+        ".object-description-body",
+        "section.panel > .panel-body",
+        'div[class*="description"]',
+    ]:
+        el = soup.select_one(selector)
+        if el:
+            text = el.get_text(separator="\n", strip=True)
+            if len(text) > 30:
+                return text
+
+    return None
+
+
+def enrich_listing_texts(
+    listings: list[dict[str, Any]],
+    min_text_len: int = 100,
+) -> int:
+    """Fetch full description for listings whose text is shorter than min_text_len.
+
+    Updates listing dicts in-place. Returns count of listings enriched.
+    """
+    candidates = [l for l in listings if len(l.get("listing_text", "") or "") < min_text_len]
+    if not candidates:
+        return 0
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+
+    enriched = 0
+    for listing in candidates:
+        detail = fetch_listing_detail(listing["listing_id"], session)
+        if detail and len(detail) > len(listing.get("listing_text", "") or ""):
+            listing["listing_text"] = detail
+            enriched += 1
+        time.sleep(random.uniform(0.3, 0.7))
+
+    return enriched

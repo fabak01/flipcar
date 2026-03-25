@@ -38,7 +38,13 @@ from src.engine.text_analyzer import analyze_listing_text
 from src.engine.underwriting import underwrite_deal
 from src.output.formatter import write_csv, write_jsonl
 from src.output.telegram_bot import format_deal_message, send_deal_alert_new, send_health_alert
-from src.scraper.finn_scraper import flatten_results, load_config, scrape_all_models, scrape_model
+from src.scraper.finn_scraper import (
+    enrich_listing_texts,
+    flatten_results,
+    load_config,
+    scrape_all_models,
+    scrape_model,
+)
 
 CONFIG_DIR = PROJECT_ROOT / "config"
 
@@ -62,7 +68,7 @@ def run_health_check() -> dict[str, str]:
     results: dict[str, str] = {}
 
     # Pristips cookies
-    cookie_file = PROJECT_ROOT / "cookies" / "finn_cookies.json"
+    cookie_file = PROJECT_ROOT / ".finn_cookies.json"
     if cookie_file.exists():
         results["FINN cookies"] = "OK"
     else:
@@ -80,11 +86,12 @@ def run_health_check() -> dict[str, str]:
     else:
         results["Telegram"] = "MISSING — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
 
-    # Supabase
-    if os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"):
+    # Supabase — mirror exact key names used by supabase_client._get_client()
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+    if os.getenv("SUPABASE_URL") and supabase_key:
         results["Supabase"] = "OK"
     else:
-        results["Supabase"] = "MISSING — set SUPABASE_URL and SUPABASE_KEY"
+        results["Supabase"] = "MISSING — set SUPABASE_URL and SUPABASE_SERVICE_KEY (or SUPABASE_ANON_KEY)"
 
     # Pristips browser
     results["Pristips"] = "OK (browser-based)"
@@ -162,6 +169,9 @@ def run_daily(
     # 1. Scrape
     config = load_config()
 
+    # In smoke mode pass the limit so each model stops scraping early
+    scrape_max = limit if mode == "smoke" else None
+
     if model_filter:
         filter_lower = model_filter.lower()
         filtered_models = [m for m in config["models"] if filter_lower in f"{m['make']} {m['model']}".lower()]
@@ -172,10 +182,10 @@ def run_daily(
         results: dict[str, list[dict[str, Any]]] = {}
         for m in filtered_models:
             key = f"{m['make']}_{m['model']}".lower().replace(' ', '_').replace('-', '').replace('.', '')
-            listings = scrape_model(m["make"], m["model"], m.get("finn_query", f"{m['make']} {m['model']}"), config["params"], config.get("aliases", {}))
+            listings = scrape_model(m["make"], m["model"], m.get("finn_query", f"{m['make']} {m['model']}"), config["params"], config.get("aliases", {}), max_listings=scrape_max)
             results[key] = listings
     else:
-        results = scrape_all_models(config)
+        results = scrape_all_models(config, max_total_listings=scrape_max)
 
     all_listings = flatten_results(results)
     logger.info("Scraped %d listings total", len(all_listings))
@@ -184,6 +194,13 @@ def run_daily(
     if limit and limit > 0 and len(all_listings) > limit:
         logger.info("Applying --limit %d (from %d listings)", limit, len(all_listings))
         all_listings = all_listings[:limit]
+
+    # Enrich short listing texts from individual detail pages
+    short_text_count = sum(1 for l in all_listings if len(l.get("listing_text", "") or "") < 100)
+    if short_text_count > 0:
+        logger.info("Fetching full description for %d listings with short text...", short_text_count)
+        n_enriched = enrich_listing_texts(all_listings)
+        logger.info("Enriched %d/%d listings with full description text", n_enriched, short_text_count)
 
     # 2. Save raw data
     for listing in all_listings:
@@ -368,6 +385,8 @@ def run_daily(
             "classification_label": c.get("label"),
             "execution_gate": c.get("execution_gate"),
             "hard_red_flag": deal.get("hard_red_flag"),
+            # Listing text length (for diagnosing ai_status=short_text)
+            "listing_text_len": len((deal.get("listing") or {}).get("listing_text", "") or ""),
             # AI
             "ai_status": deal.get("ai_status"),
             "ai_summary_short": deal.get("ai_summary_short"),
@@ -417,7 +436,8 @@ def run_daily(
             print(f"  Ask: {ask:>10,} | Pristips: {anchor:>10,} | V_adj: {v_adj:>10,}")
             print(f"  Spread ask: {spread_ask:>7.1%} | Spread bid: {spread_bid:>7.1%}")
             print(f"  Adj+: {deal.get('adj_positive',0):>+8,} | Adj-: {deal.get('adj_negative',0):>8,} | Rep: {deal.get('repair_buffer',0):>8,}")
-            print(f"  Gate: {gate} | AI: {deal.get('ai_status','?')} | Red flag: {deal.get('hard_red_flag', False)}")
+            txt_len = len((deal.get("listing") or {}).get("listing_text", "") or "")
+            print(f"  Gate: {gate} | AI: {deal.get('ai_status','?')} | text_len: {txt_len} | Red flag: {deal.get('hard_red_flag', False)}")
 
             expl = deal.get("explanation", "")
             if expl:
