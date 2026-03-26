@@ -66,12 +66,16 @@ def format_deal_message(deal: dict[str, Any]) -> str:
     km = l.get("km", 0)
     variant = l.get("variant", "")
 
+    seller_type = l.get("seller_type", "")
+    seller_label = "Forhandler" if seller_type == "forhandler" else "Privat"
+
     msg = f"[{label}] {make} {model}"
     if variant and variant != "unknown":
         msg += f" {variant}"
     msg += f" {year}"
     if km:
         msg += f" — {fmt(km)} km"
+    msg += f" ({seller_label})"
     msg += "\n\n"
 
     # Price + market
