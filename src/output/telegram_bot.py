@@ -75,13 +75,14 @@ def format_deal_message(deal: dict[str, Any]) -> str:
     msg += f" {year}"
     if km:
         msg += f" — {fmt(km)} km"
-    msg += f" ({seller_label})"
-    msg += "\n\n"
+    msg += "\n"
+    msg += f"Selger: {seller_label}\n"
+    msg += "\n"
 
     # Price + market
     msg += f"Ask: {fmt(deal.get('asking_price'))}\n"
-    msg += f"Pristips: {fmt(m.get('anchor'))}\n"
-    msg += f"Adj. market value: {fmt(deal.get('adjusted_market_value'))}\n"
+    msg += f"FMV: {fmt(m.get('anchor'))}\n"
+    msg += f"Justert FMV: {fmt(deal.get('adjusted_market_value'))}\n"
 
     spread_ask = deal.get("spread_ask_pct", 0)
     msg += f"Spread at ask: {spread_ask:.1%}\n"
