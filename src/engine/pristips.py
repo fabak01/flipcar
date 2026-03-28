@@ -1076,6 +1076,8 @@ def get_pristips_cached(
     force_refresh: bool = False,
 ) -> dict[str, Any] | None:
     """Cache wrapper: reuse cached result within 7 days."""
+    # Round km to nearest 10k so cache keys are stable across runs
+    km = max(round(int(km) / 10000) * 10000, 1000)
     logger.debug(f"[PRISTIPS] ENTER get_pristips_cached regnr={registration_number} km={km} force_refresh={force_refresh}")
     if not force_refresh:
         cached = get_cached_pristips(registration_number, int(km), max_age_days=7)

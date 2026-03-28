@@ -212,10 +212,34 @@ def run_daily(
     logger.info("Registry: %d reference regnr", len(registry))
 
     # 4. Pristips for ALL listings (smart batching)
-    logger.info("Fetching Pristips (smart batch)...")
-    pristips_results = get_pristips_batch_smart(all_listings, registry)
-    pristips_count = 0
+    # Prefilter: skip listings that can never be deals to avoid expensive browser lookups
+    PRICE_MIN, PRICE_MAX, YEAR_MIN, KM_MAX = 30_000, 800_000, 2012, 300_000
+    prefilter_skipped = 0
     for listing in all_listings:
+        price = listing.get("price_nok") or 0
+        year = listing.get("year") or 0
+        km_val = listing.get("km") or 0
+        if price < PRICE_MIN or price > PRICE_MAX or year < YEAR_MIN or km_val > KM_MAX:
+            listing["pristips"] = None
+            listing["pristips_skip_reason"] = "PREFILTER"
+            prefilter_skipped += 1
+    prefilter_kept = len(all_listings) - prefilter_skipped
+    logger.info(
+        "Pristips prefilter: %d/%d listings pass (price %d-%d, year>=%d, km<%d), %d skipped",
+        prefilter_kept, len(all_listings), PRICE_MIN, PRICE_MAX, YEAR_MIN, KM_MAX, prefilter_skipped,
+    )
+
+    logger.info("Fetching Pristips (smart batch)...")
+    # Only pass prefilter-passing listings to the batch function
+    eligible_listings = [l for l in all_listings if l.get("pristips_skip_reason") != "PREFILTER"]
+    pristips_results = get_pristips_batch_smart(eligible_listings, registry)
+    pristips_count = 0
+    fallback_processed = 0
+    fallback_cache_hits = 0
+    fallback_browser_calls = 0
+    for listing in all_listings:
+        if listing.get("pristips_skip_reason") == "PREFILTER":
+            continue
         lid = listing.get("listing_id", "")
         if lid in pristips_results:
             listing["pristips"] = pristips_results[lid]
@@ -237,11 +261,27 @@ def run_daily(
                 listing["pristips"] = None
                 listing["pristips_skip_reason"] = "WEAK_ANCHOR"
             elif regnr and (listing.get("km") or 0) > 0:
-                listing["pristips"] = get_pristips_cached(regnr, int(listing["km"]))
+                km_rounded = max(round(int(listing["km"]) / 10000) * 10000, 1000)
+                # Track cache vs browser: check if already cached before calling
+                from src.db.supabase_client import get_cached_pristips
+                was_cached = get_cached_pristips(regnr, km_rounded, max_age_days=7) is not None
+                listing["pristips"] = get_pristips_cached(regnr, km_rounded)
                 if listing["pristips"]:
                     pristips_count += 1
+                    if was_cached:
+                        fallback_cache_hits += 1
+                    else:
+                        fallback_browser_calls += 1
             else:
                 listing["pristips"] = None
+
+            fallback_processed += 1
+            if fallback_processed % 100 == 0:
+                logger.info(
+                    "Pristips progress: %d/%d fallback processed, %d cache hits, %d browser calls",
+                    fallback_processed, prefilter_kept - len(pristips_results),
+                    fallback_cache_hits, fallback_browser_calls,
+                )
 
     logger.info("Pristips fetched for %d/%d listings", pristips_count, len(all_listings))
 
