@@ -11,6 +11,22 @@ PYTHON="$APP_DIR/.venv/bin/python"
 
 mkdir -p "$LOG_DIR"
 
+# Overlap guard: skip if another live run is already in progress (cron or manual).
+# flock prevents a second invocation from acquiring the lock; pgrep catches the
+# rare case where the lock file was cleaned up but the process is still running.
+LOCK_FILE="/tmp/flipcar_run.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "=== FlipCar run SKIPPED (lock held) at $TIMESTAMP — another run is in progress ===" \
+        | tee -a "$LOG_DIR/cron.log"
+    exit 0
+fi
+if pgrep -f "\.venv/bin/python -m src\.main --live" > /dev/null 2>&1; then
+    echo "=== FlipCar run SKIPPED (live process detected) at $TIMESTAMP — another run is in progress ===" \
+        | tee -a "$LOG_DIR/cron.log"
+    exit 0
+fi
+
 echo "=== FlipCar run started at $TIMESTAMP ===" | tee -a "$LOG_FILE"
 
 # Run with unbuffered output, capture all output to log
