@@ -31,8 +31,8 @@ from src.db.supabase_client import (
     upsert_text_analysis_cache,
 )
 from src.engine.comps import find_comps
-from src.engine.pristips import get_pristips_batch_smart, get_pristips_cached
-from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr, get_reference_regnr_with_confidence, save_registry
+from src.engine.pristips import get_pristips_batch_smart
+from src.engine.regnr_registry import build_regnr_registry, get_reference_regnr, save_registry
 from src.engine.rep_estimator import estimate_repairs
 from src.engine.text_analyzer import analyze_listing_text
 from src.engine.underwriting import underwrite_deal
@@ -234,9 +234,6 @@ def run_daily(
     eligible_listings = [l for l in all_listings if l.get("pristips_skip_reason") != "PREFILTER"]
     pristips_results = get_pristips_batch_smart(eligible_listings, registry)
     pristips_count = 0
-    fallback_processed = 0
-    fallback_cache_hits = 0
-    fallback_browser_calls = 0
     for listing in all_listings:
         if listing.get("pristips_skip_reason") == "PREFILTER":
             continue
@@ -245,43 +242,8 @@ def run_daily(
             listing["pristips"] = pristips_results[lid]
             pristips_count += 1
         else:
-            regnr = listing.get("registration_number")
-            if not regnr:
-                regnr, regnr_confidence = get_reference_regnr_with_confidence(
-                    registry, listing.get("make", ""), listing.get("model", ""),
-                    listing.get("variant", "unknown"), listing.get("year", 0),
-                )
-                listing["regnr_source"] = "reference" if regnr else None
-                listing["regnr_confidence"] = regnr_confidence
-            else:
-                listing["regnr_source"] = "listing"
-                listing["regnr_confidence"] = "HIGH"
-
-            if listing.get("regnr_confidence") == "LOW":
-                listing["pristips"] = None
-                listing["pristips_skip_reason"] = "WEAK_ANCHOR"
-            elif regnr and (listing.get("km") or 0) > 0:
-                km_rounded = max(round(int(listing["km"]) / 10000) * 10000, 1000)
-                # Track cache vs browser: check if already cached before calling
-                from src.db.supabase_client import get_cached_pristips
-                was_cached = get_cached_pristips(regnr, km_rounded, max_age_days=7) is not None
-                listing["pristips"] = get_pristips_cached(regnr, km_rounded)
-                if listing["pristips"]:
-                    pristips_count += 1
-                    if was_cached:
-                        fallback_cache_hits += 1
-                    else:
-                        fallback_browser_calls += 1
-            else:
-                listing["pristips"] = None
-
-            fallback_processed += 1
-            if fallback_processed % 100 == 0:
-                logger.info(
-                    "Pristips progress: %d/%d fallback processed, %d cache hits, %d browser calls",
-                    fallback_processed, prefilter_kept - len(pristips_results),
-                    fallback_cache_hits, fallback_browser_calls,
-                )
+            listing["pristips"] = None
+            listing.setdefault("pristips_skip_reason", "NOT_IN_BATCH")
 
     logger.info("Pristips fetched for %d/%d listings", pristips_count, len(all_listings))
 

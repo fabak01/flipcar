@@ -1159,9 +1159,24 @@ def get_pristips_batch_smart(
             bucket = max(bucket, 1000)  # avoid 0
             km_buckets.setdefault(bucket, []).append(l)
 
-        # One lookup per km-bucket
+        # One lookup per km-bucket — check cache first, only browser-call on miss
         for km_bucket, bucket_listings in sorted(km_buckets.items()):
             lookups_attempted += 1
+
+            # Check cache before any browser call
+            cached = get_cached_pristips(regnr, km_bucket, max_age_days=7)
+            if cached:
+                cached["source"] = "finn_pristips_cache"
+                if "valuation_mode" not in cached:
+                    cached["valuation_mode"] = "cache"
+                if "anchor_confidence" not in cached:
+                    cached["anchor_confidence"] = "HIGH" if cached.get("market_anchor_price") else "NONE"
+                lookups_success += 1
+                for l in bucket_listings:
+                    results[l["listing_id"]] = cached
+                    listings_covered += 1
+                continue  # Skip browser + sleep for cache hits
+
             pristips = get_pristips_cached(regnr, km_bucket)
 
             if pristips:
@@ -1170,7 +1185,7 @@ def get_pristips_batch_smart(
                     results[l["listing_id"]] = pristips
                     listings_covered += 1
 
-            # Rate limit between browser lookups
+            # Rate limit only between actual browser lookups (not cache hits)
             time.sleep(3)
 
     elapsed = time.time() - batch_start

@@ -14,6 +14,7 @@ mkdir -p "$LOG_DIR"
 echo "=== FlipCar run started at $TIMESTAMP ===" | tee -a "$LOG_FILE"
 
 # Run with unbuffered output, capture all output to log
+cd "$APP_DIR"
 if PYTHONUNBUFFERED=1 "$PYTHON" -m src.main --live >> "$LOG_FILE" 2>&1; then
     echo "=== Run finished OK at $(date +"%H:%M:%S") ===" | tee -a "$LOG_FILE"
 else

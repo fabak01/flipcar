@@ -78,7 +78,7 @@ Regler:
 - hard_red_flag: true kun ved alvorlige problemer (taxi, totalskade, alvorlig mekanisk)"""
 
     try:
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, timeout=30.0)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
