@@ -7,7 +7,7 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
     align-items: center;
   }
   .filter-btn {
@@ -29,6 +29,22 @@
   }
   .total-count { font-size: 12px; color: var(--muted); margin-left: auto; }
 
+  .search-row {
+    margin-bottom: 12px;
+  }
+  .search-input {
+    width: 100%;
+    max-width: 380px;
+    padding: 7px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: 13px;
+    outline: none;
+  }
+  .search-input:focus { border-color: var(--accent); }
+
   .deal-table { width: 100%; border-collapse: collapse; }
   .deal-table thead th {
     font-size: 11px;
@@ -40,7 +56,14 @@
     border-bottom: 1px solid var(--border);
     text-align: left;
     white-space: nowrap;
+    user-select: none;
   }
+  .deal-table thead th.sortable { cursor: pointer; }
+  .deal-table thead th.sortable:hover { color: var(--fg); }
+  .deal-table thead th .sort-icon { margin-left: 3px; opacity: 0.4; font-size: 10px; }
+  .deal-table thead th.sort-asc .sort-icon::after { content: "▲"; opacity: 1; }
+  .deal-table thead th.sort-desc .sort-icon::after { content: "▼"; opacity: 1; }
+  .deal-table thead th.sort-none .sort-icon::after { content: "⇅"; }
   .deal-table thead th.right { text-align: right; }
 
   .deal-row td {
@@ -49,10 +72,12 @@
     vertical-align: middle;
   }
   .deal-row:last-child td { border-bottom: none; }
-  .deal-row:hover td { background: var(--surface2); cursor: pointer; }
+  .deal-row:hover td { background: var(--surface2); }
   .deal-row td.right { text-align: right; }
+  .deal-row.hidden { display: none; }
 
-  .car-name { font-weight: 600; font-size: 13px; }
+  .car-name { font-weight: 600; font-size: 13px; cursor: pointer; }
+  .car-name:hover { color: var(--accent); }
   .car-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
   .price-ask { font-size: 13px; font-weight: 600; }
@@ -62,47 +87,100 @@
 
   .bid-note { font-size: 11px; color: var(--amber); }
   .empty { text-align: center; color: var(--muted); padding: 48px; }
+
+  .finn-icon {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--accent);
+    border: 1px solid #2563eb44;
+    border-radius: 4px;
+    padding: 1px 5px;
+    text-decoration: none;
+    white-space: nowrap;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  .finn-icon:hover { background: #2563eb18; text-decoration: none; }
+
+  .conf-HIGH  { color: var(--green);  font-weight: 700; font-size: 11px; }
+  .conf-MEDIUM{ color: var(--amber);  font-weight: 700; font-size: 11px; }
+  .conf-LOW   { color: var(--red);    font-weight: 700; font-size: 11px; }
+
+  /* Inline status select */
+  .status-inline {
+    appearance: none;
+    -webkit-appearance: none;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--fg);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 20px 3px 8px;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    min-width: 90px;
+  }
+  .status-inline:focus { outline: none; border-color: var(--accent); }
+  .status-inline.saving { opacity: 0.5; }
+  .status-inline.saved { border-color: var(--green); }
 </style>
 
+<!-- Label filters -->
 <div class="filters">
-  <a class="filter-btn {% if not label_filter %}active{% endif %}" href="/">Alle</a>
-  <a class="filter-btn {% if label_filter == 'CALL_NOW' %}active{% endif %}" href="/?label=CALL_NOW">CALL_NOW</a>
-  <a class="filter-btn {% if label_filter == 'MESSAGE' %}active{% endif %}" href="/?label=MESSAGE">MESSAGE</a>
-  <a class="filter-btn {% if label_filter == 'WATCH' %}active{% endif %}" href="/?label=WATCH">WATCH</a>
-  <a class="filter-btn {% if label_filter == 'PASS' %}active{% endif %}" href="/?label=PASS">PASS</a>
+  <a class="filter-btn {% if not label_filter and not status_filter %}active{% endif %}" href="/">Alle ({{ label_counts.values()|sum }})</a>
+  {% for lbl in ['CALL_NOW', 'MESSAGE', 'WATCH', 'PASS'] %}
+  <a class="filter-btn {% if label_filter == lbl %}active{% endif %}" href="/?label={{ lbl }}">{{ lbl }}{% if label_counts.get(lbl) %} ({{ label_counts.get(lbl) }}){% endif %}</a>
+  {% endfor %}
   <span style="width:1px;height:16px;background:var(--border);margin:0 4px;"></span>
   <a class="filter-btn {% if status_filter == 'new' %}active{% endif %}" href="/?status=new">Ny</a>
   <a class="filter-btn {% if status_filter == 'contacted' %}active{% endif %}" href="/?status=contacted">Kontaktet</a>
   <a class="filter-btn {% if status_filter == 'bid_placed' %}active{% endif %}" href="/?status=bid_placed">Bud lagt</a>
   <a class="filter-btn {% if status_filter == 'won' %}active{% endif %}" href="/?status=won">Vunnet</a>
-  <span class="total-count">{{ total }} deals</span>
+  <span class="total-count" id="visible-count">{{ total }} deals</span>
+</div>
+
+<!-- Search -->
+<div class="search-row">
+  <input class="search-input" type="search" id="deal-search" placeholder="Søk bil, sted, variant...">
 </div>
 
 {% if deals %}
 <div class="card" style="padding:0; overflow:hidden;">
-  <table class="deal-table">
+  <table class="deal-table" id="deal-table">
     <thead>
       <tr>
-        <th>Bil</th>
-        <th>Selger</th>
-        <th class="right">Pris</th>
-        <th class="right">FMV adj</th>
-        <th class="right">Ask %</th>
-        <th class="right">Bid %</th>
+        <th class="sortable sort-none" data-col="0">Bil<span class="sort-icon"></span></th>
+        <th class="sortable sort-none" data-col="1">Selger<span class="sort-icon"></span></th>
+        <th class="sortable sort-none right" data-col="2">Pris<span class="sort-icon"></span></th>
+        <th class="sortable sort-none right" data-col="3">FMV adj<span class="sort-icon"></span></th>
+        <th class="sortable sort-none right" data-col="4">Ask %<span class="sort-icon"></span></th>
+        <th class="sortable sort-none right" data-col="5">Bid %<span class="sort-icon"></span></th>
+        <th class="sortable sort-none" data-col="6">Confidence<span class="sort-icon"></span></th>
         <th>Status</th>
-        <th>Label</th>
-        <th>Funnet</th>
+        <th class="sortable sort-none" data-col="8">Label<span class="sort-icon"></span></th>
+        <th class="sortable sort-none" data-col="9">Funnet<span class="sort-icon"></span></th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="deal-tbody">
     {% for d in deals %}
     {% set sl = d.get('classification_label', 'PASS') %}
     {% set st = (d.get('status_data') or {}).get('status', 'new') %}
     {% set ask_pct = d.get('spread_ask_pct', 0) or 0 %}
     {% set bid_pct = d.get('spread_bid_pct', 0) or 0 %}
-    <tr class="deal-row" onclick="window.location='/deal/{{ d.get('listing_id') }}'">
+    {% set conf = d.get('confidence', 'MEDIUM') or 'MEDIUM' %}
+    <tr class="deal-row"
+        data-id="{{ d.get('listing_id') }}"
+        data-search="{{ [d.get('make',''), d.get('model',''), d.get('variant','') or '', d.get('location_city','') or '', d.get('year','') or ''] | join(' ') | lower }}">
       <td>
-        <div class="car-name">{{ d.get('make','') }} {{ d.get('model','') }} {{ d.get('variant','') or '' }}</div>
+        <div class="car-name" onclick="window.location='/deal/{{ d.get('listing_id') }}'">
+          {{ d.get('make','') }} {{ d.get('model','') }}{% if d.get('variant') and d.get('variant') != 'unknown' %} {{ d.get('variant') }}{% endif %}
+          {% if d.get('listing_url') %}
+          <a class="finn-icon" href="{{ d.get('listing_url') }}" target="_blank" rel="noopener" onclick="event.stopPropagation()">FINN↗</a>
+          {% endif %}
+        </div>
         <div class="car-sub">{{ d.get('year','') }} · {{ fmt(d.get('km')) }} km · {{ d.get('location_city') or 'Ukjent' }}</div>
       </td>
       <td>
@@ -112,28 +190,38 @@
         <span style="color:var(--green);font-size:12px;">Privat</span>
         {% endif %}
       </td>
-      <td class="right">
+      <td class="right" data-val="{{ d.get('asking_price') or 0 }}">
         <div class="price-ask">{{ fmt(d.get('asking_price')) }}</div>
         <div class="price-fmv">FMV {{ fmt(d.get('market_anchor_price')) }}</div>
       </td>
-      <td class="right" style="font-weight:600;">{{ fmt(d.get('adjusted_market_value')) }}</td>
-      <td class="spread-cell {% if ask_pct >= 0.15 %}spread-pos{% elif ask_pct >= 0.06 %}spread-warn{% else %}spread-neg{% endif %}">
+      <td class="right" data-val="{{ d.get('adjusted_market_value') or 0 }}" style="font-weight:600;">{{ fmt(d.get('adjusted_market_value')) }}</td>
+      <td class="spread-cell right {% if ask_pct >= 0.15 %}spread-pos{% elif ask_pct >= 0.06 %}spread-warn{% else %}spread-neg{% endif %}"
+          data-val="{{ ask_pct }}">
         {{ pct(ask_pct) }}
       </td>
-      <td class="spread-cell {% if bid_pct >= 0.08 %}spread-pos{% elif bid_pct >= 0.02 %}spread-warn{% else %}spread-neg{% endif %}">
+      <td class="spread-cell right {% if bid_pct >= 0.08 %}spread-pos{% elif bid_pct >= 0.02 %}spread-warn{% else %}spread-neg{% endif %}"
+          data-val="{{ bid_pct }}">
         {{ pct(bid_pct) }}
       </td>
+      <td data-val="{{ conf }}">
+        <span class="conf-{{ conf }}">{{ conf }}</span>
+      </td>
       <td>
-        <span class="badge badge-{{ st }}">{{ status_labels.get(st, st) }}</span>
+        <select class="status-inline" data-id="{{ d.get('listing_id') }}" onchange="updateStatus(this)">
+          {% for key, lbl in status_labels.items() %}
+          <option value="{{ key }}" {% if st == key %}selected{% endif %}>{{ lbl }}</option>
+          {% endfor %}
+        </select>
         {% if (d.get('status_data') or {}).get('telegram_sent_at') %}
-        <span class="tg-sent" title="Telegram sendt">✈</span>
+        <span class="tg-sent" title="Telegram sendt" style="margin-left:4px;">✈</span>
         {% endif %}
         {% if (d.get('status_data') or {}).get('bid_amount') %}
         <div class="bid-note">Bud: {{ fmt((d.get('status_data') or {}).get('bid_amount')) }} kr</div>
         {% endif %}
       </td>
-      <td><span class="badge badge-{{ sl }}">{{ sl }}</span></td>
-      <td style="color:var(--muted);font-size:12px;white-space:nowrap;">{{ ago(d.get('analyzed_at','')) }}</td>
+      <td data-val="{{ sl }}"><span class="badge badge-{{ sl }}">{{ sl }}</span></td>
+      <td style="color:var(--muted);font-size:12px;white-space:nowrap;"
+          data-val="{{ d.get('analyzed_at','') }}">{{ ago(d.get('analyzed_at','')) }}</td>
     </tr>
     {% endfor %}
     </tbody>
@@ -144,4 +232,103 @@
   <p class="empty">Ingen deals funnet.</p>
 </div>
 {% endif %}
+
+<script>
+// ── Search ────────────────────────────────────────────────────────────────────
+const searchInput = document.getElementById('deal-search');
+const visibleCount = document.getElementById('visible-count');
+
+function updateVisibleCount() {
+  const rows = document.querySelectorAll('#deal-tbody .deal-row:not(.hidden)');
+  if (visibleCount) visibleCount.textContent = rows.length + ' deals';
+}
+
+if (searchInput) {
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.toLowerCase().trim();
+    document.querySelectorAll('#deal-tbody .deal-row').forEach(row => {
+      const text = row.dataset.search || '';
+      row.classList.toggle('hidden', q.length > 0 && !text.includes(q));
+    });
+    updateVisibleCount();
+  });
+}
+
+// ── Sortable columns ──────────────────────────────────────────────────────────
+let sortCol = -1, sortAsc = true;
+
+document.querySelectorAll('th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = parseInt(th.dataset.col);
+    if (sortCol === col) {
+      sortAsc = !sortAsc;
+    } else {
+      sortCol = col;
+      sortAsc = true;
+    }
+    // Update header classes
+    document.querySelectorAll('th.sortable').forEach(h => {
+      h.classList.remove('sort-asc', 'sort-desc');
+      h.classList.add('sort-none');
+    });
+    th.classList.remove('sort-none');
+    th.classList.add(sortAsc ? 'sort-asc' : 'sort-desc');
+
+    sortTable(col, sortAsc);
+  });
+});
+
+function cellValue(row, col) {
+  const cells = row.querySelectorAll('td');
+  if (!cells[col]) return '';
+  const v = cells[col].dataset.val;
+  if (v !== undefined) return v;
+  return cells[col].textContent.trim();
+}
+
+function sortTable(col, asc) {
+  const tbody = document.getElementById('deal-tbody');
+  const rows = Array.from(tbody.querySelectorAll('.deal-row'));
+  rows.sort((a, b) => {
+    const av = cellValue(a, col);
+    const bv = cellValue(b, col);
+    const an = parseFloat(av), bn = parseFloat(bv);
+    let cmp;
+    if (!isNaN(an) && !isNaN(bn)) {
+      cmp = an - bn;
+    } else {
+      cmp = av.localeCompare(bv, 'nb');
+    }
+    return asc ? cmp : -cmp;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+// ── Inline status update ──────────────────────────────────────────────────────
+function updateStatus(select) {
+  const id = select.dataset.id;
+  const status = select.value;
+  select.classList.add('saving');
+  select.disabled = true;
+
+  fetch(`/deal/${id}/status.json`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status})
+  })
+  .then(r => r.json())
+  .then(data => {
+    select.classList.remove('saving');
+    select.disabled = false;
+    if (data.ok) {
+      select.classList.add('saved');
+      setTimeout(() => select.classList.remove('saved'), 1500);
+    }
+  })
+  .catch(() => {
+    select.classList.remove('saving');
+    select.disabled = false;
+  });
+}
+</script>
 {% endblock %}

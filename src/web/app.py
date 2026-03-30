@@ -7,6 +7,7 @@ Run with:
 
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 from src.db.supabase_client import (
     get_deal_detail,
@@ -119,8 +120,10 @@ def deals_list():
     label_filter = request.args.get("label", "")
     status_filter = request.args.get("status", "")
 
-    deals = get_deals_for_dashboard(limit=300)
+    all_deals = get_deals_for_dashboard(limit=300)
+    label_counts: Counter = Counter(d.get("classification_label", "PASS") for d in all_deals)
 
+    deals = all_deals
     if label_filter:
         deals = [d for d in deals if d.get("classification_label", "") == label_filter]
     if status_filter:
@@ -141,6 +144,7 @@ def deals_list():
         label_filter=label_filter,
         status_filter=status_filter,
         status_labels=STATUS_LABELS,
+        label_counts=label_counts,
         total=len(deals),
     )
 
@@ -178,6 +182,21 @@ def update_status(listing_id: str):
         upsert_deal_status(listing_id, **fields)
 
     return redirect(url_for("deal_detail", listing_id=listing_id))
+
+
+@app.route("/deal/<listing_id>/status.json", methods=["POST"])
+def update_status_json(listing_id: str):
+    """JSON endpoint for inline status updates (fetch from deals list)."""
+    data = request.get_json(silent=True) or {}
+    status = data.get("status", "").strip()
+    fields: dict = {}
+    if status:
+        fields["status"] = status
+        if status == "bid_placed":
+            fields["bid_at"] = datetime.now(timezone.utc).isoformat()
+    if fields:
+        upsert_deal_status(listing_id, **fields)
+    return jsonify({"ok": True, "status": status})
 
 
 if __name__ == "__main__":

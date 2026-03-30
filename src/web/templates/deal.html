@@ -93,6 +93,14 @@
 
 <a class="back-link" href="/">← Tilbake til oversikt</a>
 
+<!-- is_rep_listing warning -->
+{% if deal.get('is_rep_listing') %}
+<div style="background:#7c16161a;border:1px solid #7c161644;border-radius:var(--radius);padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:10px;">
+  <span style="color:var(--red);font-weight:700;font-size:13px;">ADVARSEL: Referanse-regnr</span>
+  <span style="font-size:12px;color:var(--muted);">Pristips er hentet via lånt regnr fra samme modell — verdivurdering er usikker. Blokket fra Telegram.</span>
+</div>
+{% endif %}
+
 <!-- Hero -->
 <div class="deal-hero">
   <div class="hero-top">
@@ -157,8 +165,16 @@
 
   <!-- Confidence + flags -->
   <div style="margin-top:14px;display:flex;align-items:center;flex-wrap:wrap;gap:12px;">
+    {% set conf = deal.get('confidence','MEDIUM') %}
     <span style="font-size:12px;color:var(--muted);">Confidence:
-      <span class="conf-{{ deal.get('confidence','MEDIUM') }}">{{ deal.get('confidence','MEDIUM') }}</span>
+      <span class="conf-{{ conf }}">{{ conf }}</span>
+      {% if conf == 'HIGH' %}
+      <span style="color:var(--muted);font-weight:400;"> — eget regnr + privat + AI ok</span>
+      {% elif conf == 'MEDIUM' %}
+      <span style="color:var(--muted);font-weight:400;"> — eget regnr, men noe info mangler eller forhandler</span>
+      {% elif conf == 'LOW' %}
+      <span style="color:var(--red);font-weight:400;"> — referanse-regnr, forhandler m/ generisk tekst, eller mye mangler → BLOKKERT</span>
+      {% endif %}
     </span>
     <span style="font-size:12px;color:var(--muted);">
       AI: {{ deal.get('ai_status','') }}
@@ -189,6 +205,53 @@
     </a>
   </div>
   {% endif %}
+</div>
+
+<!-- Status panel — prominent at top -->
+{% set sd = deal.get('status_data') or {} %}
+<div class="card" style="margin-bottom:16px;padding:16px;">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+    <div class="section-header" style="margin-bottom:0;">Dealstatus</div>
+    {% if sd.get('telegram_sent_at') %}
+    <span class="tg-sent">✈ Telegram sendt {{ sd.get('telegram_sent_at','')[:16].replace('T',' ') }}</span>
+    {% endif %}
+    {% if sd.get('bid_amount') %}
+    <span style="font-size:13px;">
+      <span style="color:var(--muted);">Bud:</span>
+      <strong style="color:var(--amber);">{{ fmt(sd.get('bid_amount')) }} kr</strong>
+      {% if sd.get('bid_at') %}<span style="color:var(--muted);font-size:11px;"> — {{ sd.get('bid_at','')[:10] }}</span>{% endif %}
+    </span>
+    {% endif %}
+  </div>
+
+  {% if sd.get('notes') %}
+  <div class="notes-display" style="margin-bottom:14px;">{{ sd.get('notes') }}</div>
+  {% endif %}
+
+  <form method="POST" action="/deal/{{ deal.get('listing_id') }}/status">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Status</label>
+        <select name="status">
+          {% for key, label in status_labels.items() %}
+          <option value="{{ key }}" {% if st == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Bud (kr)</label>
+        <input type="number" name="bid_amount" placeholder="f.eks. 185000"
+          value="{{ sd.get('bid_amount') or '' }}" style="width:140px;">
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:10px;">
+      <label>Notater</label>
+      <textarea name="notes" placeholder="Avtale, inntrykk, neste steg...">{{ sd.get('notes') or '' }}</textarea>
+    </div>
+    <div style="margin-top:10px;">
+      <button type="submit" class="btn btn-primary">Lagre</button>
+    </div>
+  </form>
 </div>
 
 <div class="grid-2">
@@ -237,8 +300,7 @@
         <div class="section-header">Underwriting — justeringer</div>
         {% set cat_adjs = adj.get('catalog') or [] %}
         {% set spec_adjs = adj.get('spec_matches') or [] %}
-        {% set has_adjs = cat_adjs or spec_adjs %}
-        {% if has_adjs %}
+        {% if cat_adjs or spec_adjs %}
         <table class="adj-table">
           <thead>
             <tr>
@@ -249,26 +311,22 @@
           </thead>
           <tbody>
           {% for a in cat_adjs %}
-          {% if a.get('amount', 0) != 0 %}
-          <tr>
+          <tr {% if a.get('amount', 0) == 0 %}style="opacity:0.45;"{% endif %}>
             <td>{{ adj_labels.get(a.get('type',''), a.get('type','').replace('_',' ').title()) }}</td>
             <td class="{% if a.get('amount',0) > 0 %}amount-pos{% elif a.get('amount',0) < 0 %}amount-neg{% else %}amount-zero{% endif %}">
               {% if a.get('amount',0) > 0 %}+{% endif %}{{ fmt(a.get('amount',0)) }} kr
             </td>
             <td><span class="source-tag">{{ a.get('source','') }}</span></td>
           </tr>
-          {% endif %}
           {% endfor %}
           {% for s in spec_adjs %}
-          {% if s.get('amount_nok', 0) != 0 %}
-          <tr>
+          <tr {% if s.get('amount_nok', 0) == 0 %}style="opacity:0.45;"{% endif %}>
             <td>{{ (s.get('matched_alias') or s.get('spec', '')).capitalize() }}</td>
             <td class="{% if s.get('amount_nok',0) > 0 %}amount-pos{% elif s.get('amount_nok',0) < 0 %}amount-neg{% else %}amount-zero{% endif %}">
               {% if s.get('amount_nok',0) > 0 %}+{% endif %}{{ fmt(s.get('amount_nok',0)) }} kr
             </td>
             <td><span class="source-tag">spec</span></td>
           </tr>
-          {% endif %}
           {% endfor %}
           </tbody>
         </table>
@@ -339,60 +397,6 @@
 
   <!-- Right column -->
   <div>
-
-    <!-- STATUS PANEL -->
-    <div class="section status-panel">
-      <div class="card">
-        <div class="section-header">Dealstatus</div>
-
-        {% set sd = deal.get('status_data') or {} %}
-        {% if sd.get('telegram_sent_at') %}
-        <div class="tg-sent" style="margin-bottom:10px;">
-          ✈ Telegram sendt — {{ sd.get('telegram_sent_at','')[:16].replace('T',' ') }}
-        </div>
-        {% endif %}
-
-        {% if sd.get('bid_amount') %}
-        <div style="margin-bottom:10px;font-size:13px;">
-          <span style="color:var(--muted);">Ditt bud:</span>
-          <strong style="color:var(--amber);">{{ fmt(sd.get('bid_amount')) }} kr</strong>
-          {% if sd.get('bid_at') %}
-          <span style="color:var(--muted);font-size:11px;"> — {{ sd.get('bid_at','')[:10] }}</span>
-          {% endif %}
-        </div>
-        {% endif %}
-
-        {% if sd.get('notes') %}
-        <div class="notes-display">{{ sd.get('notes') }}</div>
-        {% endif %}
-
-        <form method="POST" action="/deal/{{ deal.get('listing_id') }}/status" style="margin-top:14px;">
-          <div class="form-row">
-            <div class="form-group">
-              <label>Status</label>
-              <select name="status">
-                {% for key, label in status_labels.items() %}
-                <option value="{{ key }}" {% if st == key %}selected{% endif %}>{{ label }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Bud (kr)</label>
-              <input type="number" name="bid_amount" placeholder="f.eks. 185000"
-                value="{{ sd.get('bid_amount') or '' }}" style="width:140px;">
-            </div>
-          </div>
-          <div class="form-group" style="margin-top:10px;">
-            <label>Notater</label>
-            <textarea name="notes" placeholder="Avtale, inntrykk, neste steg...">{{ sd.get('notes') or '' }}</textarea>
-          </div>
-          <div style="margin-top:10px;display:flex;gap:8px;">
-            <button type="submit" class="btn btn-primary">Lagre</button>
-            <a href="{{ deal.get('listing_url','#') }}" target="_blank" class="btn btn-ghost">FINN ↗</a>
-          </div>
-        </form>
-      </div>
-    </div>
 
     <!-- AI ANALYSE -->
     <div class="section">
