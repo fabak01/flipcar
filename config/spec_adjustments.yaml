@@ -19,24 +19,29 @@ positive_specs:
     aliases: ["panorama", "panoramatak", "glasstak"]
     premium_nok: 5000
   leather_interior:
+    # Standard on many Tesla trims — Pristips prices premium interiors in
     aliases: ["skinn", "skinninteriør", "leather", "helskinn"]
-    premium_nok: 4000
+    premium_nok: 0
+    applies_to_make_exclude: ["Tesla"]
   premium_audio:
     aliases: ["harman kardon", "bowers", "bang olufsen", "premium lyd", "meridian"]
     premium_nok: 5000
   autopilot_fsd:
-    aliases: ["autopilot", "fsd", "full self", "enhanced autopilot"]
-    premium_nok: 15000
+    # Only truly rare FSD upgrade counts — basic Autopilot is standard on all Teslas (Pristips prices it in)
+    aliases: ["fsd", "full self-driving", "full self driving"]
+    premium_nok: 5000
     applies_to_make: ["Tesla"]
   long_range_battery:
+    # Pristips prices LR vs SR variants directly — no extra adjustment needed
     aliases: ["long range", "langrekkevidde", "stor batteri", "77 kwh", "82 kwh"]
-    premium_nok: 12000
+    premium_nok: 0
     applies_to: ["electric"]
   awd_drivetrain:
+    # Tesla AWD is priced by Pristips variant — exclude Tesla to avoid double-counting
     aliases: ["4wd", "awd", "quattro", "4motion", "firehjulsdrift", "xdrive"]
-    premium_nok: 8000
-    # Only match if alias is preceded/followed by word boundary, not substring
+    premium_nok: 6000
     word_boundary: true
+    applies_to_make_exclude: ["Tesla"]
   adaptive_cruise:
     aliases: ["adaptiv cruise", "adaptive cruise"]
     premium_nok: 3000

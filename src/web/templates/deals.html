@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}FlipCar — Deals{% endblock %}
+
+{% block content %}
+<style>
+  .filters {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    align-items: center;
+  }
+  .filter-btn {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .filter-btn:hover, .filter-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    text-decoration: none;
+  }
+  .total-count { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+  .deal-table { width: 100%; border-collapse: collapse; }
+  .deal-table thead th {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .deal-table thead th.right { text-align: right; }
+
+  .deal-row td {
+    padding: 10px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .deal-row:last-child td { border-bottom: none; }
+  .deal-row:hover td { background: var(--surface2); cursor: pointer; }
+  .deal-row td.right { text-align: right; }
+
+  .car-name { font-weight: 600; font-size: 13px; }
+  .car-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .price-ask { font-size: 13px; font-weight: 600; }
+  .price-fmv { font-size: 11px; color: var(--muted); }
+
+  .spread-cell { font-size: 13px; font-weight: 700; text-align: right; }
+
+  .bid-note { font-size: 11px; color: var(--amber); }
+  .empty { text-align: center; color: var(--muted); padding: 48px; }
+</style>
+
+<div class="filters">
+  <a class="filter-btn {% if not label_filter %}active{% endif %}" href="/">Alle</a>
+  <a class="filter-btn {% if label_filter == 'CALL_NOW' %}active{% endif %}" href="/?label=CALL_NOW">CALL_NOW</a>
+  <a class="filter-btn {% if label_filter == 'MESSAGE' %}active{% endif %}" href="/?label=MESSAGE">MESSAGE</a>
+  <a class="filter-btn {% if label_filter == 'WATCH' %}active{% endif %}" href="/?label=WATCH">WATCH</a>
+  <a class="filter-btn {% if label_filter == 'PASS' %}active{% endif %}" href="/?label=PASS">PASS</a>
+  <span style="width:1px;height:16px;background:var(--border);margin:0 4px;"></span>
+  <a class="filter-btn {% if status_filter == 'new' %}active{% endif %}" href="/?status=new">Ny</a>
+  <a class="filter-btn {% if status_filter == 'contacted' %}active{% endif %}" href="/?status=contacted">Kontaktet</a>
+  <a class="filter-btn {% if status_filter == 'bid_placed' %}active{% endif %}" href="/?status=bid_placed">Bud lagt</a>
+  <a class="filter-btn {% if status_filter == 'won' %}active{% endif %}" href="/?status=won">Vunnet</a>
+  <span class="total-count">{{ total }} deals</span>
+</div>
+
+{% if deals %}
+<div class="card" style="padding:0; overflow:hidden;">
+  <table class="deal-table">
+    <thead>
+      <tr>
+        <th>Bil</th>
+        <th>Selger</th>
+        <th class="right">Pris</th>
+        <th class="right">FMV adj</th>
+        <th class="right">Ask %</th>
+        <th class="right">Bid %</th>
+        <th>Status</th>
+        <th>Label</th>
+        <th>Funnet</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for d in deals %}
+    {% set sl = d.get('classification_label', 'PASS') %}
+    {% set st = (d.get('status_data') or {}).get('status', 'new') %}
+    {% set ask_pct = d.get('spread_ask_pct', 0) or 0 %}
+    {% set bid_pct = d.get('spread_bid_pct', 0) or 0 %}
+    <tr class="deal-row" onclick="window.location='/deal/{{ d.get('listing_id') }}'">
+      <td>
+        <div class="car-name">{{ d.get('make','') }} {{ d.get('model','') }} {{ d.get('variant','') or '' }}</div>
+        <div class="car-sub">{{ d.get('year','') }} · {{ fmt(d.get('km')) }} km · {{ d.get('location_city') or 'Ukjent' }}</div>
+      </td>
+      <td>
+        {% if d.get('seller_type') == 'forhandler' %}
+        <span style="color:var(--amber);font-size:12px;">Forhandler</span>
+        {% else %}
+        <span style="color:var(--green);font-size:12px;">Privat</span>
+        {% endif %}
+      </td>
+      <td class="right">
+        <div class="price-ask">{{ fmt(d.get('asking_price')) }}</div>
+        <div class="price-fmv">FMV {{ fmt(d.get('market_anchor_price')) }}</div>
+      </td>
+      <td class="right" style="font-weight:600;">{{ fmt(d.get('adjusted_market_value')) }}</td>
+      <td class="spread-cell {% if ask_pct >= 0.15 %}spread-pos{% elif ask_pct >= 0.06 %}spread-warn{% else %}spread-neg{% endif %}">
+        {{ pct(ask_pct) }}
+      </td>
+      <td class="spread-cell {% if bid_pct >= 0.08 %}spread-pos{% elif bid_pct >= 0.02 %}spread-warn{% else %}spread-neg{% endif %}">
+        {{ pct(bid_pct) }}
+      </td>
+      <td>
+        <span class="badge badge-{{ st }}">{{ status_labels.get(st, st) }}</span>
+        {% if (d.get('status_data') or {}).get('telegram_sent_at') %}
+        <span class="tg-sent" title="Telegram sendt">✈</span>
+        {% endif %}
+        {% if (d.get('status_data') or {}).get('bid_amount') %}
+        <div class="bid-note">Bud: {{ fmt((d.get('status_data') or {}).get('bid_amount')) }} kr</div>
+        {% endif %}
+      </td>
+      <td><span class="badge badge-{{ sl }}">{{ sl }}</span></td>
+      <td style="color:var(--muted);font-size:12px;white-space:nowrap;">{{ ago(d.get('analyzed_at','')) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card">
+  <p class="empty">Ingen deals funnet.</p>
+</div>
+{% endif %}
+{% endblock %}

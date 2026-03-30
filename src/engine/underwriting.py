@@ -59,6 +59,30 @@ def _estimate_realistic_bid(listing: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compute_confidence(listing: dict[str, Any], ai: dict[str, Any], regnr_source: str) -> str:
+    """Compute deal confidence level for execution gating.
+
+    HIGH: own regnr + private seller + AI ok + minimal missing info
+    MEDIUM: own regnr + some info missing or dealer with full info
+    LOW: reference regnr OR dealer with generic text OR many missing fields
+    """
+    is_dealer = listing.get("seller_type") == "forhandler"
+    is_reference_regnr = regnr_source == "reference"
+    missing_info = ai.get("missing_info", [])
+    ai_ok = ai.get("ai_status") == "ok"
+
+    if is_reference_regnr:
+        return "LOW"
+
+    if is_dealer and (not ai_ok or len(missing_info) >= 3):
+        return "LOW"
+
+    if not is_dealer and ai_ok and len(missing_info) <= 1:
+        return "HIGH"
+
+    return "MEDIUM"
+
+
 def _compute_repair_buffer(listing: dict[str, Any]) -> int:
     """Lean repair buffer: text_issue_p50 + 0.5 * expected_model_issue_cost.
 
@@ -152,9 +176,15 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
     ai_positive = sum(p.get("value_nok", 0) for p in ai.get("positives", []))
     ai_negative = sum(i.get("cost_p50", 0) for i in ai.get("issues", []))
 
-    # Total adjustments
-    adj_pos = catalog_positive + spec_positive + ai_positive
+    # Total adjustments (before cap)
+    adj_pos_raw = catalog_positive + spec_positive + ai_positive
     adj_neg = catalog_negative + spec_negative + ai_negative
+
+    # Cap positive adjustments by seller type — dealers write polished text, not polished cars
+    is_dealer = listing.get("seller_type") == "forhandler"
+    adj_pos_cap = 15_000 if is_dealer else 40_000
+    adj_pos = min(adj_pos_raw, adj_pos_cap)
+    adj_pos_capped = adj_pos_raw > adj_pos_cap
 
     # === REPAIR BUFFER (lean: text_p50 + 0.5 * model_expected) ===
     rep_buffer = _compute_repair_buffer(listing)
@@ -170,6 +200,15 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
     realistic_bid = bid_result["realistic_bid_price"]
     spread_bid_abs = v_adj - realistic_bid
     spread_bid_pct = (v_adj - realistic_bid) / v_adj if v_adj > 0 else 0.0
+
+    # === CONFIDENCE SCORING ===
+    regnr_source = listing.get("regnr_source", "listing")
+    confidence = _compute_confidence(listing, ai, regnr_source)
+
+    # === HIGH TEXT DEPENDENCY FLAG ===
+    # If positive adjustments exceed 15% of anchor price, the deal depends too heavily on
+    # text-based signals which are unreliable (especially for dealers)
+    high_text_dependency = market_anchor > 0 and adj_pos_raw > 0.15 * market_anchor
 
     # === HARD RED FLAGS ===
     listing_text = listing.get("listing_text", "")
@@ -224,6 +263,12 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
         ai_status=ai_status,
     )
 
+    # LOW confidence deals are never actionable — override execution gate
+    if confidence == "LOW" and classification["execution_gate"] in ("SEND", "SEND_NO_AI"):
+        classification = dict(classification)
+        classification["execution_gate"] = "BLOCKED"
+        classification["reason"] += " [BLOCKED: LOW confidence]"
+
     # AI summary
     ai_summary = ai.get("ai_summary_short", "")
     if not ai_summary:
@@ -265,8 +310,12 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
         "spread_bid_abs": spread_bid_abs,
         "spread_bid_pct": round(spread_bid_pct, 4),
         "adj_positive": adj_pos,
+        "adj_positive_raw": adj_pos_raw,
+        "adj_positive_capped": adj_pos_capped,
         "adj_negative": adj_neg,
         "repair_buffer": rep_buffer,
+        "confidence": confidence,
+        "high_text_dependency": high_text_dependency,
         "hard_red_flag": has_hard_red_flag,
         "hard_red_flag_details": hard_red_flags,
         # Status fields
@@ -288,6 +337,9 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
             "spec_negative": spec_negative,
             "ai_positive": ai_positive,
             "ai_negative": ai_negative,
+            "adj_pos_raw": adj_pos_raw,
+            "adj_pos_cap": adj_pos_cap,
+            "adj_pos_capped": adj_pos_capped,
         },
         "bid_detail": bid_result,
         "rep_detail": listing.get("rep_estimate", {}),

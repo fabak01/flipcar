@@ -26,6 +26,7 @@ from src.db.supabase_client import (
     get_cached_text_analysis,
     get_previous_run,
     log_scrape_run,
+    mark_telegram_sent,
     upsert_analysis,
     upsert_raw_listing,
     upsert_text_analysis_cache,
@@ -279,6 +280,7 @@ def run_daily(
             listing.get("make", ""),
             listing.get("model", ""),
             int(listing.get("year") or 0),
+            seller_type=listing.get("seller_type", ""),
         )
         ai["_text_hash"] = text_hash
         listing["ai_analysis"] = ai
@@ -369,6 +371,8 @@ def run_daily(
             "variant": l.get("variant"),
             "year": l.get("year"),
             "km": l.get("km"),
+            "seller_type": l.get("seller_type"),
+            "location_city": l.get("location_city"),
             # Core output
             "asking_price": deal.get("asking_price"),
             "market_anchor_price": m.get("anchor"),
@@ -381,12 +385,17 @@ def run_daily(
             "spread_bid_abs": deal.get("spread_bid_abs"),
             "spread_bid_pct": deal.get("spread_bid_pct"),
             "adj_positive": deal.get("adj_positive"),
+            "adj_positive_raw": deal.get("adj_positive_raw"),
+            "adj_positive_capped": deal.get("adj_positive_capped"),
             "adj_negative": deal.get("adj_negative"),
             "repair_buffer": deal.get("repair_buffer"),
-            # Classification
+            # Classification + confidence
             "classification_label": c.get("label"),
             "execution_gate": c.get("execution_gate"),
             "hard_red_flag": deal.get("hard_red_flag"),
+            "hard_red_flag_details": deal.get("hard_red_flag_details"),
+            "confidence": deal.get("confidence"),
+            "high_text_dependency": deal.get("high_text_dependency"),
             # Listing text length (for diagnosing ai_status=short_text)
             "listing_text_len": len((deal.get("listing") or {}).get("listing_text", "") or ""),
             # AI
@@ -420,6 +429,9 @@ def run_daily(
                 gate = deal.get("classification", {}).get("execution_gate", "")
                 if gate in ("SEND", "SEND_NO_AI"):
                     alerts_sent += 1
+                    listing_id = deal.get("listing", {}).get("listing_id")
+                    if listing_id:
+                        mark_telegram_sent(listing_id)
     else:
         # Console output
         for deal in deals[:20 if mode != "smoke" else 3]:

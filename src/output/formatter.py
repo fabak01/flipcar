@@ -44,7 +44,7 @@ def write_csv(records: list[dict[str, Any]], filepath: str = "deals.csv") -> Non
     ]
 
     path = Path(filepath)
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
 

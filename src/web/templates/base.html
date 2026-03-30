@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}FlipCar{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f172a;
+      --surface:   #1e293b;
+      --surface2:  #263245;
+      --border:    #334155;
+      --text:      #e2e8f0;
+      --muted:     #94a3b8;
+      --accent:    #3b82f6;
+
+      --green:  #22c55e;
+      --blue:   #3b82f6;
+      --amber:  #f59e0b;
+      --red:    #ef4444;
+      --gray:   #64748b;
+      --purple: #8b5cf6;
+      --orange: #f97316;
+
+      --radius: 8px;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Nav */
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      height: 48px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    nav .brand { font-weight: 700; font-size: 16px; color: var(--text); }
+    nav .brand span { color: var(--accent); }
+    nav a { color: var(--muted); font-size: 13px; }
+    nav a:hover { color: var(--text); text-decoration: none; }
+
+    /* Layout */
+    .container { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+
+    /* Badges */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .badge-CALL_NOW { background: #16a34a22; color: var(--green); border: 1px solid #16a34a44; }
+    .badge-MESSAGE  { background: #2563eb22; color: var(--blue);  border: 1px solid #2563eb44; }
+    .badge-WATCH    { background: #d9770622; color: var(--amber); border: 1px solid #d9770644; }
+    .badge-PASS     { background: #47556922; color: var(--gray);  border: 1px solid #47556944; }
+
+    .badge-new       { background: #2563eb18; color: #60a5fa; border: 1px solid #2563eb33; }
+    .badge-contacted { background: #7c3aed18; color: #a78bfa; border: 1px solid #7c3aed33; }
+    .badge-bid_placed{ background: #ea580c18; color: #fb923c; border: 1px solid #ea580c33; }
+    .badge-won       { background: #16a34a18; color: #4ade80; border: 1px solid #16a34a33; }
+    .badge-lost      { background: #dc262618; color: #f87171; border: 1px solid #dc262633; }
+    .badge-skipped   { background: #47556918; color: #94a3b8; border: 1px solid #47556933; }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+
+    /* Section headers */
+    .section-header {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 8px 0 6px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    /* Metric grid */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 12px;
+    }
+    .metric {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .metric .label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+    .metric .value { font-size: 16px; font-weight: 600; }
+    .metric .value.pos { color: var(--green); }
+    .metric .value.neg { color: var(--red); }
+    .metric .value.neutral { color: var(--text); }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 7px 8px;
+      border-bottom: 1px solid #1e293b;
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+    .amount-pos { color: var(--green); font-weight: 600; }
+    .amount-neg { color: var(--red); font-weight: 600; }
+    .amount-zero { color: var(--muted); }
+    .source-tag {
+      font-size: 10px;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    /* Signal lists */
+    .signal-list { list-style: none; }
+    .signal-list li {
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+    }
+    .signal-list li:last-child { border-bottom: none; }
+    .signal-list .sig-icon { font-size: 12px; flex-shrink: 0; }
+    .sig-pos { color: var(--green); }
+    .sig-neg { color: var(--red); }
+    .sig-warn { color: var(--amber); }
+
+    /* Form */
+    .form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    select, input[type="number"], input[type="text"], textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 13px;
+      font-family: var(--font);
+    }
+    select:focus, input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    textarea { resize: vertical; min-height: 60px; width: 100%; }
+    .btn {
+      padding: 7px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    /* Spread coloring */
+    .spread-pos { color: var(--green); }
+    .spread-neg { color: var(--red); }
+    .spread-warn { color: var(--amber); }
+
+    /* Flag pills */
+    .flag-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      background: #d9770618;
+      color: var(--amber);
+      border: 1px solid #d9770633;
+      margin: 2px 2px 2px 0;
+    }
+    .flag-pill.red { background: #dc262618; color: var(--red); border-color: #dc262633; }
+
+    /* Telegram sent indicator */
+    .tg-sent {
+      font-size: 11px;
+      color: #38bdf8;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .metric-grid { grid-template-columns: 1fr 1fr; }
+      .form-row { flex-direction: column; }
+      nav { gap: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <span class="brand">Flip<span>Car</span></span>
+    <a href="/">Deals</a>
+  </nav>
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

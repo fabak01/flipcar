@@ -75,9 +75,9 @@ def classify_deal_v2(
         }
 
     # Spread-based classification
-    if spread_ask_pct >= 0.10:
+    if spread_ask_pct >= 0.15:
         label = "CALL_NOW"
-    elif spread_bid_pct >= 0.06 and spread_ask_pct >= 0.04:
+    elif spread_bid_pct >= 0.08 and spread_ask_pct >= 0.06:
         label = "MESSAGE"
     elif spread_bid_pct >= 0.02:
         label = "WATCH"

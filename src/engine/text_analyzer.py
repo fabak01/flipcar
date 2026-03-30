@@ -30,7 +30,7 @@ def _empty_ai_result(ai_status: str) -> dict[str, Any]:
     }
 
 
-def analyze_listing_text(listing_text: str, make: str, model: str, year: int) -> dict[str, Any]:
+def analyze_listing_text(listing_text: str, make: str, model: str, year: int, seller_type: str = "") -> dict[str, Any]:
     """Analyze listing text with OpenAI gpt-4o-mini when available, else graceful fallback.
 
     Returns dict with ai_status field indicating what happened.
@@ -50,32 +50,55 @@ def analyze_listing_text(listing_text: str, make: str, model: str, year: int) ->
         logger.warning("OpenAI import failed: %s", e)
         return _empty_ai_result("fallback_import_error")
 
-    prompt = f"""Analyser denne norske FINN.no-annonsen for en {year} {make} {model}.
+    is_dealer = seller_type == "forhandler"
+    dealer_context = (
+        "VIKTIG: Dette er en FORHANDLERANNONSE. Forhandlere er profesjonelle selgere som polerer teksten sin — "
+        "tekstkvalitet er IKKE det samme som bilkvalitet. Vær ekstra skeptisk. "
+        "Mangel på nøkkelinfo (dokumentert service, kjent SOH, konkrete feil) fra forhandler er mistenkelig. "
+        "Høy positiv justeringssum fra forhandler er et VARSELTEGN, ikke et kjøpssignal. "
+        if is_dealer else
+        "Dette er en privatannonse."
+    )
 
-Svar KUN med gyldig JSON, ingen annen tekst.
+    prompt = f"""Du er en svært skeptisk og erfaren norsk bruktbilkjøper som analyserer en FINN.no-annonse for en {year} {make} {model}.
+
+{dealer_context}
 
 Annonsetekst:
 \"\"\"{listing_text}\"\"\"
 
-Returner denne JSON-strukturen:
+Svar KUN med gyldig JSON, ingen annen tekst.
+
 {{
-  "positive_signals": ["spesifikke positive ting fra annonsen"],
-  "negative_signals": ["spesifikke bekymringer eller sannsynlige kostnader"],
-  "missing_info": ["viktig manglende informasjon aa spoerre selger om"],
-  "seller_questions": ["praktiske spoersmaal til selger"],
+  "positive_signals": ["kun KONKRETE fakta med faktisk verdi — se regler nedenfor"],
+  "negative_signals": ["bekymringer, kostnader, manglende info som er mistenkelig"],
+  "missing_info": ["viktig manglende informasjon som kjøper bør etterspørre"],
+  "seller_questions": ["konkrete spørsmål til selger"],
   "seller_motivation_score": 3,
   "seller_motivation_reasoning": "en kort setning",
-  "condition_summary": "en kort setning om tilstand",
+  "condition_summary": "en nøktern setning om tilstand — ikke selgerens ord, dine observasjoner",
   "hard_red_flag": false
 }}
 
-Regler:
-- Vaer spesifikk — kun ting som faktisk staar eller er tydelig implisert
-- Ikke hallusinér
-- Ignorer generisk salgsfluff
-- Fokuser paa handlingsrelevant informasjon for en kjoeper
+STRENGE REGLER FOR positive_signals:
+- IGNORER FULLSTENDIG generiske fraser: "velholdt", "pen", "god stand", "må sees", "mye bil for pengene", "godt vedlikeholdt", "fin bil", "lite brukt" og lignende salgsfluff
+- IGNORER standard-utstyr som er inkludert i trim-prisen (f.eks. autopilot, premium-interiør, AWD på standardvarianter)
+- GODKJENTE positive signaler (kun hvis eksplisitt nevnt med detaljer):
+  * Nye bremser/dekk (faktisk nevnt, ikke bare "bra stand")
+  * Dokumentert servicehistorikk med årstall/km
+  * Konkret SOH%-verdi (f.eks. "87% SOH")
+  * Fersk EU-godkjenning med dato
+  * Eksplisitte garantivilkår (ikke bare "garanti" uten detaljer)
+  * Hengerfeste eller sjeldent ettermarkedsutstyr
+  * Kvittering/faktura for nylig arbeid
+
+NEGATIVE signaler vektes TYNGRE enn positive:
+- Vag tilstandsbeskrivelse fra forhandler er i seg selv et negativt signal
+- Manglende servicehefte = negativt
+- Ukjent SOH på elbil = negativt
+- "Selges som den er" er negativt
 - seller_motivation_score: 1=ikke motivert, 5=veldig motivert
-- hard_red_flag: true kun ved alvorlige problemer (taxi, totalskade, alvorlig mekanisk)"""
+- hard_red_flag: true kun ved alvorlige problemer (taxi, totalskade, alvorlig mekanisk feil, rust gjennomslag)"""
 
     try:
         client = OpenAI(api_key=api_key, timeout=30.0)

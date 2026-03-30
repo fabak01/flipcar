@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS regnr_registry (
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(make, model, variant, year)
 );
+
+CREATE TABLE IF NOT EXISTS deal_status (
+  listing_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'new',
+  telegram_sent_at TIMESTAMPTZ,
+  bid_amount INTEGER,
+  bid_at TIMESTAMPTZ,
+  notes TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 
@@ -359,4 +369,133 @@ def upsert_text_analysis_cache(listing_id: str, data: dict[str, Any]) -> bool:
         return True
     except Exception as e:
         logger.error("Failed to write text analysis cache: %s", e)
+        return False
+
+
+# ── Deal status tracking ─────────────────────────────────────────────────────
+
+def get_deals_for_dashboard(limit: int = 300) -> list[dict[str, Any]]:
+    """Fetch analyzed listings joined with deal status for the web dashboard.
+
+    Returns a flat list of deal dicts, each with a 'status_data' key.
+    """
+    client = _get_client()
+    if not client:
+        return []
+
+    try:
+        resp = (
+            client.table("analyzed_listings")
+            .select("listing_id, analyzed_at, analysis")
+            .order("analyzed_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        logger.error("Failed to fetch deals for dashboard: %s", e)
+        return []
+
+    if not rows:
+        return []
+
+    listing_ids = [r["listing_id"] for r in rows]
+
+    # Batch-fetch statuses
+    statuses: dict[str, Any] = {}
+    try:
+        st_resp = client.table("deal_status").select("*").in_("listing_id", listing_ids).execute()
+        statuses = {r["listing_id"]: r for r in (st_resp.data or [])}
+    except Exception:
+        pass  # deal_status table may not exist yet — degrade gracefully
+
+    deals: list[dict[str, Any]] = []
+    for row in rows:
+        a: dict[str, Any] = row.get("analysis") or {}
+        deal = dict(a)
+        deal["listing_id"] = row["listing_id"]
+        deal["analyzed_at"] = row.get("analyzed_at", "")
+        deal["status_data"] = statuses.get(row["listing_id"], {"status": "new"})
+        deals.append(deal)
+
+    return deals
+
+
+def get_deal_detail(listing_id: str) -> Optional[dict[str, Any]]:
+    """Fetch a single deal with full analysis and status."""
+    client = _get_client()
+    if not client:
+        return None
+
+    try:
+        resp = (
+            client.table("analyzed_listings")
+            .select("listing_id, analyzed_at, analysis")
+            .eq("listing_id", listing_id)
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            return None
+        row = resp.data[0]
+    except Exception as e:
+        logger.error("Failed to fetch deal detail %s: %s", listing_id, e)
+        return None
+
+    a: dict[str, Any] = row.get("analysis") or {}
+    deal = dict(a)
+    deal["listing_id"] = listing_id
+    deal["analyzed_at"] = row.get("analyzed_at", "")
+
+    try:
+        st_resp = client.table("deal_status").select("*").eq("listing_id", listing_id).limit(1).execute()
+        deal["status_data"] = st_resp.data[0] if st_resp.data else {"status": "new"}
+    except Exception:
+        deal["status_data"] = {"status": "new"}
+
+    return deal
+
+
+def upsert_deal_status(listing_id: str, **fields: Any) -> bool:
+    """Upsert deal status. Pass keyword args for fields to update."""
+    client = _get_client()
+    if not client:
+        return False
+
+    payload: dict[str, Any] = {
+        "listing_id": listing_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    payload.update({k: v for k, v in fields.items() if v is not None and v != ""})
+
+    try:
+        client.table("deal_status").upsert(payload, on_conflict="listing_id").execute()
+        return True
+    except Exception as e:
+        logger.error("Failed to upsert deal_status %s: %s", listing_id, e)
+        return False
+
+
+def mark_telegram_sent(listing_id: str) -> bool:
+    """Record that a Telegram deal alert was sent. Sets status to 'contacted' if still 'new'."""
+    client = _get_client()
+    if not client:
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        # Fetch current status to avoid overwriting a more advanced state
+        existing = client.table("deal_status").select("status").eq("listing_id", listing_id).limit(1).execute()
+        current_status = (existing.data[0].get("status") if existing.data else None) or "new"
+        new_status = "contacted" if current_status == "new" else current_status
+
+        client.table("deal_status").upsert({
+            "listing_id": listing_id,
+            "telegram_sent_at": now,
+            "status": new_status,
+            "updated_at": now,
+        }, on_conflict="listing_id").execute()
+        return True
+    except Exception as e:
+        logger.error("Failed to mark_telegram_sent %s: %s", listing_id, e)
         return False

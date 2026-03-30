@@ -65,6 +65,11 @@ def detect_specs(
         if applies_to_make and make not in applies_to_make:
             continue
 
+        # Skip if make is in the exclude list (e.g., Tesla already prices this in via Pristips variant)
+        applies_to_make_exclude = spec_cfg.get("applies_to_make_exclude")
+        if applies_to_make_exclude and make in applies_to_make_exclude:
+            continue
+
         use_word_boundary = spec_cfg.get("word_boundary", False)
 
         for alias in aliases:

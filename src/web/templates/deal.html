@@ -1,0 +1,510 @@
+{% extends "base.html" %}
+{% block title %}{{ deal.get('make','') }} {{ deal.get('model','') }} {{ deal.get('year','') }} — FlipCar{% endblock %}
+
+{% block content %}
+{% set sl = deal.get('classification_label', 'PASS') %}
+{% set gate = deal.get('execution_gate', 'BLOCKED') %}
+{% set st = (deal.get('status_data') or {}).get('status', 'new') %}
+{% set adj = deal.get('adjustments_detail') or {} %}
+{% set mkt = deal.get('market') or {} %}
+{% set ask_pct = deal.get('spread_ask_pct', 0) or 0 %}
+{% set bid_pct = deal.get('spread_bid_pct', 0) or 0 %}
+
+<style>
+  .back-link { font-size: 12px; color: var(--muted); margin-bottom: 16px; display:inline-block; }
+  .deal-hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .hero-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .hero-title { font-size: 20px; font-weight: 700; }
+  .hero-sub { font-size: 13px; color: var(--muted); margin-top: 3px; }
+  .hero-badges { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .gate-badge {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: #1e293b;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .gate-SEND     { background: #16a34a22; color: var(--green); border-color: #16a34a44; }
+  .gate-SEND_NO_AI { background: #d9770622; color: var(--amber); border-color: #d9770644; }
+  .gate-BLOCKED  { background: #47556922; color: var(--gray);  border-color: var(--border); }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media(max-width:700px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .section { margin-bottom: 16px; }
+  .section .card { padding: 16px; }
+
+  .finn-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    background: #2563eb18;
+    border: 1px solid #2563eb33;
+    border-radius: 6px;
+    padding: 6px 14px;
+    text-decoration: none;
+  }
+  .finn-link:hover { background: #2563eb28; text-decoration: none; }
+
+  .adj-table td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+  .adj-table td:nth-child(3) { text-align: right; color: var(--muted); font-size: 11px; }
+  .adj-total-row td { font-weight: 700; border-top: 2px solid var(--border); padding-top: 10px; }
+
+  .flags-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+  .status-panel .form-row { margin-top: 12px; }
+
+  .tg-timestamp { font-size: 12px; color: #38bdf8; margin-top: 4px; }
+  .notes-display {
+    font-size: 13px;
+    color: var(--muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    margin-top: 8px;
+  }
+
+  .conf-HIGH { color: var(--green); font-weight: 700; }
+  .conf-MEDIUM { color: var(--amber); font-weight: 700; }
+  .conf-LOW { color: var(--red); font-weight: 700; }
+
+  .empty-state { color: var(--muted); font-size: 13px; font-style: italic; }
+</style>
+
+<a class="back-link" href="/">← Tilbake til oversikt</a>
+
+<!-- Hero -->
+<div class="deal-hero">
+  <div class="hero-top">
+    <div>
+      <div class="hero-title">
+        {{ deal.get('make','') }} {{ deal.get('model','') }}
+        {% if deal.get('variant') and deal.get('variant') != 'unknown' %} {{ deal.get('variant') }}{% endif %}
+        {{ deal.get('year','') }}
+      </div>
+      <div class="hero-sub">
+        {{ fmt(deal.get('km')) }} km ·
+        {% if deal.get('seller_type') == 'forhandler' %}
+          <span style="color:var(--amber);">Forhandler</span>
+        {% else %}
+          <span style="color:var(--green);">Privat</span>
+        {% endif %}
+        · {{ deal.get('location_city') or 'Ukjent' }}
+        · {{ ago(deal.get('analyzed_at','')) }}
+      </div>
+    </div>
+    <div class="hero-badges">
+      <span class="badge badge-{{ sl }}">{{ sl }}</span>
+      <span class="gate-badge gate-{{ gate }}">{{ gate }}</span>
+      <span class="badge badge-{{ st }}">{{ status_labels.get(st, st) }}</span>
+      {% if (deal.get('status_data') or {}).get('telegram_sent_at') %}
+      <span class="tg-sent" title="Telegram sendt">✈ Sendt</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Key metrics -->
+  <div class="metric-grid">
+    <div class="metric">
+      <div class="label">Annonsepris</div>
+      <div class="value neutral">{{ fmt(deal.get('asking_price')) }} kr</div>
+    </div>
+    <div class="metric">
+      <div class="label">Pristips (FMV)</div>
+      <div class="value neutral">{{ fmt(deal.get('market_anchor_price')) }} kr</div>
+    </div>
+    <div class="metric">
+      <div class="label">Justert FMV</div>
+      <div class="value neutral">{{ fmt(deal.get('adjusted_market_value')) }} kr</div>
+    </div>
+    <div class="metric">
+      <div class="label">Spread at ask</div>
+      <div class="value {% if ask_pct >= 0.15 %}pos{% elif ask_pct >= 0 %}neutral{% else %}neg{% endif %}">
+        {{ pct(ask_pct) }}
+      </div>
+    </div>
+    <div class="metric">
+      <div class="label">Realistisk bud</div>
+      <div class="value neutral">{{ fmt(deal.get('realistic_bid_price')) }} kr</div>
+    </div>
+    <div class="metric">
+      <div class="label">Spread at bid</div>
+      <div class="value {% if bid_pct >= 0.08 %}pos{% elif bid_pct >= 0 %}neutral{% else %}neg{% endif %}">
+        {{ pct(bid_pct) }}
+      </div>
+    </div>
+  </div>
+
+  <!-- Confidence + flags -->
+  <div style="margin-top:14px;display:flex;align-items:center;flex-wrap:wrap;gap:12px;">
+    <span style="font-size:12px;color:var(--muted);">Confidence:
+      <span class="conf-{{ deal.get('confidence','MEDIUM') }}">{{ deal.get('confidence','MEDIUM') }}</span>
+    </span>
+    <span style="font-size:12px;color:var(--muted);">
+      AI: {{ deal.get('ai_status','') }}
+      {% if deal.get('seller_motivation_score') %} · Motivasjon {{ deal.get('seller_motivation_score') }}/5{% endif %}
+    </span>
+  </div>
+
+  {% set flags = [] %}
+  {% if deal.get('soh_status') in ('not_mentioned', 'unknown') %}{% set _ = flags.append(('SOH IKKE OPPGITT', false)) %}{% endif %}
+  {% if deal.get('high_text_dependency') %}{% set _ = flags.append(('HØY TEKSTAVHENGIGHET', false)) %}{% endif %}
+  {% if deal.get('adj_positive_capped') %}{% set _ = flags.append(('JUSTERINGER BEGRENSET', false)) %}{% endif %}
+  {% if deal.get('eu_status') == 'expired' %}{% set _ = flags.append(('EU FORFALT', true)) %}{% endif %}
+  {% if deal.get('eu_status') == 'expiring_soon' %}{% set _ = flags.append(('EU SNART FORFALT', false)) %}{% endif %}
+  {% if deal.get('hard_red_flag') %}{% set _ = flags.append(('RED FLAG', true)) %}{% endif %}
+
+  {% if flags %}
+  <div class="flags-row">
+    {% for (flag, is_red) in flags %}
+    <span class="flag-pill {% if is_red %}red{% endif %}">{{ flag }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if deal.get('listing_url') %}
+  <div style="margin-top:16px;">
+    <a class="finn-link" href="{{ deal.get('listing_url') }}" target="_blank" rel="noopener">
+      Åpne på FINN.no ↗
+    </a>
+  </div>
+  {% endif %}
+</div>
+
+<div class="grid-2">
+
+  <!-- Left column -->
+  <div>
+
+    <!-- MARKED -->
+    <div class="section">
+      <div class="card">
+        <div class="section-header">Marked (Pristips)</div>
+        <div class="metric-grid" style="grid-template-columns:1fr 1fr;">
+          <div class="metric">
+            <div class="label">Pristips anchor</div>
+            <div class="value neutral">{{ fmt(deal.get('market_anchor_price')) }} kr</div>
+          </div>
+          <div class="metric">
+            <div class="label">Intervall</div>
+            <div class="value neutral" style="font-size:13px;">
+              {{ fmt(mkt.get('low')) }} – {{ fmt(mkt.get('high')) }} kr
+            </div>
+          </div>
+          <div class="metric">
+            <div class="label">Salgstid</div>
+            <div class="value neutral">{{ mkt.get('days_to_sell') or 'N/A' }} dager</div>
+          </div>
+          <div class="metric">
+            <div class="label">Aktive lignende</div>
+            <div class="value neutral">{{ mkt.get('active_similar') if mkt.get('active_similar') is not none else 'N/A' }}</div>
+          </div>
+          <div class="metric">
+            <div class="label">Solgt 90d</div>
+            <div class="value neutral">{{ mkt.get('sold_90d') if mkt.get('sold_90d') is not none else 'N/A' }}</div>
+          </div>
+          <div class="metric">
+            <div class="label">Regnr kilde</div>
+            <div class="value neutral" style="font-size:12px;">{{ mkt.get('regnr_source') or 'N/A' }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- UNDERWRITING -->
+    <div class="section">
+      <div class="card">
+        <div class="section-header">Underwriting — justeringer</div>
+        {% set cat_adjs = adj.get('catalog') or [] %}
+        {% set spec_adjs = adj.get('spec_matches') or [] %}
+        {% set has_adjs = cat_adjs or spec_adjs %}
+        {% if has_adjs %}
+        <table class="adj-table">
+          <thead>
+            <tr>
+              <th>Justering</th>
+              <th style="text-align:right;">Beløp</th>
+              <th style="text-align:right;">Kilde</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for a in cat_adjs %}
+          {% if a.get('amount', 0) != 0 %}
+          <tr>
+            <td>{{ adj_labels.get(a.get('type',''), a.get('type','').replace('_',' ').title()) }}</td>
+            <td class="{% if a.get('amount',0) > 0 %}amount-pos{% elif a.get('amount',0) < 0 %}amount-neg{% else %}amount-zero{% endif %}">
+              {% if a.get('amount',0) > 0 %}+{% endif %}{{ fmt(a.get('amount',0)) }} kr
+            </td>
+            <td><span class="source-tag">{{ a.get('source','') }}</span></td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+          {% for s in spec_adjs %}
+          {% if s.get('amount_nok', 0) != 0 %}
+          <tr>
+            <td>{{ (s.get('matched_alias') or s.get('spec', '')).capitalize() }}</td>
+            <td class="{% if s.get('amount_nok',0) > 0 %}amount-pos{% elif s.get('amount_nok',0) < 0 %}amount-neg{% else %}amount-zero{% endif %}">
+              {% if s.get('amount_nok',0) > 0 %}+{% endif %}{{ fmt(s.get('amount_nok',0)) }} kr
+            </td>
+            <td><span class="source-tag">spec</span></td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">Ingen justeringer</p>
+        {% endif %}
+
+        <table style="margin-top:12px;">
+          <tbody>
+            <tr>
+              <td style="color:var(--muted);font-size:12px;">Sum positiv</td>
+              <td style="text-align:right;" class="amount-pos">+{{ fmt(deal.get('adj_positive')) }} kr
+                {% if deal.get('adj_positive_capped') %}
+                <span style="font-size:10px;color:var(--amber);"> (begrenset fra {{ fmt(deal.get('adj_positive_raw')) }})</span>
+                {% endif %}
+              </td>
+            </tr>
+            <tr>
+              <td style="color:var(--muted);font-size:12px;">Sum negativ</td>
+              <td style="text-align:right;" class="amount-neg">-{{ fmt(deal.get('adj_negative')) }} kr</td>
+            </tr>
+            <tr>
+              <td style="color:var(--muted);font-size:12px;">Rep-buffer</td>
+              <td style="text-align:right;" class="amount-neg">-{{ fmt(deal.get('repair_buffer')) }} kr</td>
+            </tr>
+            <tr class="adj-total-row">
+              <td>Justert FMV</td>
+              <td style="text-align:right;font-size:15px;">{{ fmt(deal.get('adjusted_market_value')) }} kr</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- Bid detail -->
+        {% set bd = deal.get('bid_detail') or {} %}
+        {% if bd %}
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+          <div class="section-header" style="margin-bottom:8px;">Budkalkulator</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">
+            <span style="color:var(--muted);">Grunnrabatt</span>
+            <span style="text-align:right;">{{ "%.1f"|format((bd.get('breakdown',{}).get('base_discount',0))*100) }}%</span>
+            <span style="color:var(--muted);">Alder-bonus</span>
+            <span style="text-align:right;">{{ "%.1f"|format((bd.get('breakdown',{}).get('age_bonus',0))*100) }}%</span>
+            <span style="color:var(--muted);">Prisreduksjon-bonus</span>
+            <span style="text-align:right;">{{ "%.1f"|format((bd.get('breakdown',{}).get('cut_bonus',0))*100) }}%</span>
+            <span style="color:var(--muted);font-weight:600;">Totalt</span>
+            <span style="text-align:right;font-weight:600;">{{ "%.1f"|format((bd.get('bid_discount_pct',0))*100) }}%</span>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Comps -->
+    {% set comps = deal.get('comps') or {} %}
+    <div class="section">
+      <div class="card">
+        <div class="section-header">Komparatorer</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;">
+          <span style="color:var(--muted);">Tier</span>
+          <span>{{ comps.get('tier') or 'N/A' }}</span>
+          <span style="color:var(--muted);">Antall comps</span>
+          <span>{{ comps.get('n_comps') or 0 }}</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right column -->
+  <div>
+
+    <!-- STATUS PANEL -->
+    <div class="section status-panel">
+      <div class="card">
+        <div class="section-header">Dealstatus</div>
+
+        {% set sd = deal.get('status_data') or {} %}
+        {% if sd.get('telegram_sent_at') %}
+        <div class="tg-sent" style="margin-bottom:10px;">
+          ✈ Telegram sendt — {{ sd.get('telegram_sent_at','')[:16].replace('T',' ') }}
+        </div>
+        {% endif %}
+
+        {% if sd.get('bid_amount') %}
+        <div style="margin-bottom:10px;font-size:13px;">
+          <span style="color:var(--muted);">Ditt bud:</span>
+          <strong style="color:var(--amber);">{{ fmt(sd.get('bid_amount')) }} kr</strong>
+          {% if sd.get('bid_at') %}
+          <span style="color:var(--muted);font-size:11px;"> — {{ sd.get('bid_at','')[:10] }}</span>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        {% if sd.get('notes') %}
+        <div class="notes-display">{{ sd.get('notes') }}</div>
+        {% endif %}
+
+        <form method="POST" action="/deal/{{ deal.get('listing_id') }}/status" style="margin-top:14px;">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Status</label>
+              <select name="status">
+                {% for key, label in status_labels.items() %}
+                <option value="{{ key }}" {% if st == key %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Bud (kr)</label>
+              <input type="number" name="bid_amount" placeholder="f.eks. 185000"
+                value="{{ sd.get('bid_amount') or '' }}" style="width:140px;">
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:10px;">
+            <label>Notater</label>
+            <textarea name="notes" placeholder="Avtale, inntrykk, neste steg...">{{ sd.get('notes') or '' }}</textarea>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px;">
+            <button type="submit" class="btn btn-primary">Lagre</button>
+            <a href="{{ deal.get('listing_url','#') }}" target="_blank" class="btn btn-ghost">FINN ↗</a>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- AI ANALYSE -->
+    <div class="section">
+      <div class="card">
+        <div class="section-header">AI-analyse</div>
+
+        {% if deal.get('ai_summary_short') %}
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">{{ deal.get('ai_summary_short') }}</p>
+        {% endif %}
+
+        <!-- Positive signals -->
+        {% set pos = deal.get('ai_positive_signals') or [] %}
+        {% if pos %}
+        <div style="margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Positive signaler</div>
+          <ul class="signal-list">
+            {% for p in pos %}
+            <li>
+              <span class="sig-icon sig-pos">+</span>
+              <span>{% if p is mapping %}{{ p.get('name', p) }}{% else %}{{ p }}{% endif %}</span>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        <!-- Negative signals -->
+        {% set neg = deal.get('ai_negative_signals') or [] %}
+        {% if neg %}
+        <div style="margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:600;color:var(--red);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Negative signaler</div>
+          <ul class="signal-list">
+            {% for n in neg %}
+            <li>
+              <span class="sig-icon sig-neg">−</span>
+              <span>{% if n is mapping %}{{ n.get('name', n) }}{% else %}{{ n }}{% endif %}</span>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        <!-- Missing info -->
+        {% set missing = deal.get('ai_missing_info') or [] %}
+        {% if missing %}
+        <div>
+          <div style="font-size:11px;font-weight:600;color:var(--amber);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Sjekk / spør om</div>
+          <ul class="signal-list">
+            {% for m in missing %}
+            <li>
+              <span class="sig-icon sig-warn">?</span>
+              <span>{% if m is mapping %}{{ m.get('question', m) }}{% else %}{{ m }}{% endif %}</span>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        {% if not pos and not neg and not missing %}
+        <p class="empty-state">Ingen AI-signaler tilgjengelig.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Rep estimate -->
+    {% set rep = deal.get('rep_detail') or {} %}
+    {% if rep %}
+    <div class="section">
+      <div class="card">
+        <div class="section-header">Reparasjonsestimater</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;">
+          <span style="color:var(--muted);">Tekst p50 (lag1)</span>
+          <span style="text-align:right;">{{ fmt(rep.get('lag1_p50')) }} kr</span>
+          <span style="color:var(--muted);">Modell forventet (lag2)</span>
+          <span style="text-align:right;">{{ fmt(rep.get('lag2_expected')) }} kr</span>
+          <span style="color:var(--muted);font-weight:600;">Rep-buffer brukt</span>
+          <span style="text-align:right;font-weight:600;" class="amount-neg">{{ fmt(deal.get('repair_buffer')) }} kr</span>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Classification reason -->
+    <div class="section">
+      <div class="card">
+        <div class="section-header">Klassifiseringsdetaljer</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px;align-items:baseline;">
+          <span style="color:var(--muted);">Label</span>
+          <span><span class="badge badge-{{ sl }}">{{ sl }}</span></span>
+          <span style="color:var(--muted);">Gate</span>
+          <span><span class="gate-badge gate-{{ gate }}">{{ gate }}</span></span>
+          <span style="color:var(--muted);">Årsak</span>
+          <span>{{ (deal.get('classification') or {}).get('reason') or deal.get('explanation','').split('\n')|last }}</span>
+          <span style="color:var(--muted);">Hard red flag</span>
+          <span>
+            {% if deal.get('hard_red_flag') %}
+            <span style="color:var(--red);font-weight:700;">Ja</span>
+            {% if deal.get('hard_red_flag_details') %}
+            — {{ deal.get('hard_red_flag_details') | join(', ') }}
+            {% endif %}
+            {% else %}
+            <span style="color:var(--green);">Nei</span>
+            {% endif %}
+          </span>
+          <span style="color:var(--muted);">SOH status</span>
+          <span>{{ deal.get('soh_status') or 'N/A' }}</span>
+          <span style="color:var(--muted);">EU status</span>
+          <span>{{ deal.get('eu_status') or 'N/A' }}</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

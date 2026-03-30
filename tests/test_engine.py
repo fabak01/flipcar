@@ -374,16 +374,16 @@ class TestClassifier:
     """V2 classifier tests: spread-based CALL_NOW/MESSAGE/WATCH/PASS + execution_gate."""
 
     def test_call_now_high_spread(self):
-        """spread_ask >= 10% → CALL_NOW."""
+        """spread_ask >= 15% → CALL_NOW."""
         from src.engine.classifier import classify_deal_v2
-        result = classify_deal_v2(spread_ask_pct=0.12, spread_bid_pct=0.08, hard_red_flag=False, has_pristips=True, ai_status="ok")
+        result = classify_deal_v2(spread_ask_pct=0.16, spread_bid_pct=0.10, hard_red_flag=False, has_pristips=True, ai_status="ok")
         assert result["label"] == "CALL_NOW"
         assert result["execution_gate"] == "SEND"
 
     def test_message_moderate_spread(self):
-        """spread_bid >= 6% and spread_ask >= 4% → MESSAGE."""
+        """spread_bid >= 8% and spread_ask >= 6% → MESSAGE."""
         from src.engine.classifier import classify_deal_v2
-        result = classify_deal_v2(spread_ask_pct=0.05, spread_bid_pct=0.07, hard_red_flag=False, has_pristips=True, ai_status="ok")
+        result = classify_deal_v2(spread_ask_pct=0.07, spread_bid_pct=0.09, hard_red_flag=False, has_pristips=True, ai_status="ok")
         assert result["label"] == "MESSAGE"
         assert result["execution_gate"] == "SEND"
 
@@ -418,7 +418,7 @@ class TestClassifier:
     def test_send_no_ai_when_ai_unavailable(self):
         """CALL_NOW with ai_status != ok → SEND_NO_AI."""
         from src.engine.classifier import classify_deal_v2
-        result = classify_deal_v2(spread_ask_pct=0.12, spread_bid_pct=0.08, hard_red_flag=False, has_pristips=True, ai_status="fallback_no_api_key")
+        result = classify_deal_v2(spread_ask_pct=0.16, spread_bid_pct=0.12, hard_red_flag=False, has_pristips=True, ai_status="fallback_no_api_key")
         assert result["label"] == "CALL_NOW"
         assert result["execution_gate"] == "SEND_NO_AI"
 
