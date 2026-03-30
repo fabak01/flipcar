@@ -235,6 +235,10 @@ def format_deal_message(deal: dict[str, Any]) -> str:
 
 def send_deal_alert_new(deal: dict[str, Any]) -> bool:
     """Send a deal alert if execution_gate allows it."""
+    # Hard block: rep listings use a borrowed regnr — valuation is less reliable
+    if deal.get("is_rep_listing"):
+        return True
+
     c = deal.get("classification", {})
     gate = c.get("execution_gate", "BLOCKED")
 

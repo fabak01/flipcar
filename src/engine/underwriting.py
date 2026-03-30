@@ -202,7 +202,8 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
     spread_bid_pct = (v_adj - realistic_bid) / v_adj if v_adj > 0 else 0.0
 
     # === CONFIDENCE SCORING ===
-    regnr_source = listing.get("regnr_source", "listing")
+    regnr_source = listing.get("regnr_source", "own")
+    is_rep_listing = regnr_source == "reference"  # Pristips was looked up via borrowed regnr
     confidence = _compute_confidence(listing, ai, regnr_source)
 
     # === HIGH TEXT DEPENDENCY FLAG ===
@@ -263,8 +264,12 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
         ai_status=ai_status,
     )
 
-    # LOW confidence deals are never actionable — override execution gate
-    if confidence == "LOW" and classification["execution_gate"] in ("SEND", "SEND_NO_AI"):
+    # Rep listings and LOW confidence deals are never actionable
+    if is_rep_listing and classification["execution_gate"] in ("SEND", "SEND_NO_AI"):
+        classification = dict(classification)
+        classification["execution_gate"] = "BLOCKED"
+        classification["reason"] += " [BLOCKED: reference regnr]"
+    elif confidence == "LOW" and classification["execution_gate"] in ("SEND", "SEND_NO_AI"):
         classification = dict(classification)
         classification["execution_gate"] = "BLOCKED"
         classification["reason"] += " [BLOCKED: LOW confidence]"
@@ -315,6 +320,7 @@ def underwrite_deal(listing: dict[str, Any], params: dict[str, Any]) -> dict[str
         "adj_negative": adj_neg,
         "repair_buffer": rep_buffer,
         "confidence": confidence,
+        "is_rep_listing": is_rep_listing,
         "high_text_dependency": high_text_dependency,
         "hard_red_flag": has_hard_red_flag,
         "hard_red_flag_details": hard_red_flags,

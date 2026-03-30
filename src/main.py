@@ -214,7 +214,7 @@ def run_daily(
 
     # 4. Pristips for ALL listings (smart batching)
     # Prefilter: skip listings that can never be deals to avoid expensive browser lookups
-    PRICE_MIN, PRICE_MAX, YEAR_MIN, KM_MAX = 30_000, 800_000, 2012, 300_000
+    PRICE_MIN, PRICE_MAX, YEAR_MIN, KM_MAX = 30_000, 800_000, 2012, 120_000
     prefilter_skipped = 0
     for listing in all_listings:
         price = listing.get("price_nok") or 0
@@ -247,6 +247,15 @@ def run_daily(
             listing.setdefault("pristips_skip_reason", "NOT_IN_BATCH")
 
     logger.info("Pristips fetched for %d/%d listings", pristips_count, len(all_listings))
+
+    # Stamp regnr_source so underwriting/confidence logic can distinguish own vs borrowed regnr
+    for listing in all_listings:
+        if listing.get("registration_number"):
+            listing["regnr_source"] = "own"
+        elif listing.get("pristips") is not None:
+            listing["regnr_source"] = "reference"
+        else:
+            listing["regnr_source"] = "none"
 
     # 5. AI analysis (resilient — never blocks classification)
     import hashlib
@@ -395,6 +404,7 @@ def run_daily(
             "hard_red_flag": deal.get("hard_red_flag"),
             "hard_red_flag_details": deal.get("hard_red_flag_details"),
             "confidence": deal.get("confidence"),
+            "is_rep_listing": deal.get("is_rep_listing"),
             "high_text_dependency": deal.get("high_text_dependency"),
             # Listing text length (for diagnosing ai_status=short_text)
             "listing_text_len": len((deal.get("listing") or {}).get("listing_text", "") or ""),
